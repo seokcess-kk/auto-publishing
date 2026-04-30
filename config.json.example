@@ -1,0 +1,28 @@
+{
+  "default_profile": "my_blog_1",
+  "wordpress_profiles": {
+    "my_blog_1": {
+      "site_url":      "https://example1.mycafe24.com",
+      "username":      "my_username_1",
+      "jwt_token":     "your_jwt_token_here",
+      "jwt_token_env": "WP_JWT_TOKEN",
+      "category_id":   1,
+      "tag_id":        1,
+      "channel_id":    "wpmycafe24xxxxxx"
+    },
+    "my_blog_2": {
+      "site_url":      "https://example2.mycafe24.com",
+      "username":      "my_username_2",
+      "jwt_token":     "your_jwt_token_here",
+      "jwt_token_env": "WP2_JWT_TOKEN",
+      "category_id":   1,
+      "tag_id":        1,
+      "channel_id":    "wpmycafexxxxxxxx"
+    }
+  },
+  "github_pages": {
+    "repo_path":  "/path/to/your_username.github.io",
+    "author":     "Your Name",
+    "channel_id": "github_channel_id"
+  }
+}

@@ -1,0 +1,143 @@
+"""
+파이프라인: 알리익스프레스 상품 크롤링 → 티스토리
+
+- 역할 매핑: TISTORY_BLOG_ALIEXPRESS (미설정 시 TISTORY_BLOG_NAME 폴백)
+- AliexpressSource 로 상품 + 제휴 단축링크 수집
+- ItemScout 키워드 풀 사용 (쿠팡·WP와 공유)
+- build_content 는 aliexpress_to_wordpress 의 HTML 빌더 재사용 (동일 레이아웃)
+
+실행:
+    python -m pipelines.aliexpress_to_tistory
+    python -m pipelines.aliexpress_to_tistory --count 5
+"""
+import os
+import random
+import sys
+import time
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from common.logger import log
+from common.tistory_blogs import resolve_blog_name
+from publishers.tistory import TistoryPublisher
+from sources.aliexpress import AliexpressSource
+
+from pipelines.aliexpress_to_wordpress import build_content
+from pipelines.coupang_to_wordpress import get_keywords
+
+
+SCHEDULE = {
+    "env":  "SCHEDULE_ALIEXPRESS_TISTORY",
+    "func": "run",
+}
+
+
+def run(count_per_keyword: int = 10) -> None:
+    """알리 크롤링 → 티스토리 발행.
+
+    ⚠️ 순서 주의: AliexpressSource 와 TistoryPublisher 가 모두 sync_playwright
+    를 쓰므로 동시 사용 시 'Playwright Sync API inside the asyncio loop'
+    충돌. 상품 수집을 모두 끝낸 뒤 source.close() → publisher.login() 순서로
+    sync_playwright 인스턴스를 직렬화한다.
+    """
+    from sources.itemscout_keywords import mark_keywords_used, get_pool_status
+
+    blog_name = resolve_blog_name("aliexpress")
+    log(f"[알리→티스토리] 시작 (blog={blog_name})", "step")
+    log(get_pool_status(), "info")
+
+    # 1) 알리 source 로 상품 먼저 수집 (publisher 로그인 전에)
+    tracking_id = os.getenv("ALIEXPRESS_TRACKING_ID", "wordpress")
+    source = AliexpressSource(tracking_id=tracking_id)
+
+    post_count = int(os.getenv("ALIEXPRESS_POST_COUNT", "1"))
+    keywords   = get_keywords(n=post_count)
+
+    # collected: [(keyword, products), ...]
+    collected: list[tuple[str, list]] = []
+    try:
+        for keyword in keywords[:post_count]:
+            log(f"키워드 처리: {keyword}", "step")
+            products = source.search(keyword, count=count_per_keyword, require_affiliate=True)
+            if not products:
+                log(f"'{keyword}' 상품/링크 수집 실패, 건너뜀", "warn")
+                continue
+            collected.append((keyword, products))
+    finally:
+        # source 의 sync_playwright 를 명시적으로 종료해야 publisher 가 재사용 가능
+        source.close()
+
+    if not collected:
+        log("수집된 상품 없음", "warn")
+        from common.notifier import notify_pipeline_result
+        notify_pipeline_result("알리→티스토리", 0, post_count, details="수집 실패")
+        return
+
+    # 2) 티스토리 로그인 (이 시점에 sync_playwright 새로 켜짐)
+    pub = TistoryPublisher(blog_name)
+    if not pub.login():
+        log(f"티스토리 로그인 실패 (blog={blog_name}). 종료.", "error")
+        from common.notifier import notify_pipeline_result
+        notify_pipeline_result("알리→티스토리", 0, post_count, details="로그인 실패")
+        _close_pub(pub)
+        return
+
+    published = 0
+    published_keywords = []
+    try:
+        for keyword, products in collected:
+            title, content, _excerpt, _slug = build_content(keyword, products)
+            image_url = products[0].get("image", "")
+            tags = [keyword, "알리익스프레스", "해외직구", "추천상품"]
+
+            result = pub.post(
+                title=title,
+                content=content,
+                tags=tags,
+                image_url=image_url,
+                category=os.getenv("TISTORY_CATEGORY", ""),
+            )
+            if result.success:
+                published += 1
+                published_keywords.append(keyword)
+                log(f"발행 완료: {result.url}", "ok")
+                if result.url:
+                    from common.publish_queue import add_url as _add_url
+                    _add_url(result.url, platform="tistory", title=title)
+            else:
+                log(f"발행 실패: {result.message}", "error")
+
+            time.sleep(random.uniform(10, 20))
+    finally:
+        _close_pub(pub)
+
+    if published_keywords:
+        mark_keywords_used(published_keywords)
+
+    total = min(post_count, len(keywords))
+    log(f"[알리→티스토리] 완료: {published}/{total}건 발행", "step")
+
+    from common.notifier import notify_pipeline_result
+    notify_pipeline_result(
+        "알리→티스토리", published, total,
+        details=f"키워드: {', '.join(published_keywords)}" if published_keywords else "",
+    )
+
+
+def _close_pub(pub) -> None:
+    close = getattr(pub, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    count = int(os.getenv("ALIEXPRESS_PRODUCT_COUNT", "10"))
+    if "--count" in sys.argv:
+        idx = sys.argv.index("--count")
+        if idx + 1 < len(sys.argv):
+            count = int(sys.argv[idx + 1])
+    run(count_per_keyword=count)

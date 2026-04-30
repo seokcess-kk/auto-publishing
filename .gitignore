@@ -1,0 +1,57 @@
+# 환경변수 및 계정 정보 (API 키, 비밀번호, JWT 토큰 — 절대 커밋 금지)
+.env
+config.json
+.secrets/
+
+# 키워드 데이터 (개인 운영 데이터)
+data/
+
+# 세션 파일
+.sessions/
+sessions/
+*.pkl
+*.session
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# GitHub Pages 레포 (별도 git 관리)
+daechanlife81.github.io/
+
+# macOS
+.DS_Store
+
+# 로그
+*.log
+scheduler.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude / Cursor / Gemini / Playwright MCP 캐시
+.claude/
+.cursor/
+.gemini/
+.playwright-mcp/
+
+# 디버그 스크린샷
+screenshots/
+riseset_*.png
+# 루트 디렉토리 ad-hoc 디버깅 캡처 (정상 산출물은 screenshots/ · data/ 하위)
+/board_*.png
+/captcha*.png
+/kakao_*.png
+/linkmaker_*.png
+/pemtpemt*.png
+/searchadvisor_*.png
+/tistory_*.png
+
+# Graphify 출력 결과
+graphify-out/
