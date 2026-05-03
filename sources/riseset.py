@@ -51,7 +51,8 @@ class RiseSetSource:
         }
         log(f"출몰시각 조회: {location} ({date})", "step")
         try:
-            resp = requests.get(url, params=params, timeout=10)
+            resp = requests.get(url, params=params, timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
 
             root = ET.fromstring(resp.content)

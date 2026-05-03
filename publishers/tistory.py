@@ -186,26 +186,27 @@ class TistoryPublisher(Publisher):
         뉴스픽과 달리 티스토리의 Kakao 로그인은 **같은 창에서 리다이렉트**로
         진행된다 (popup 아님). ID/PW 폼 → 간편로그인 저장 체크 → 로그인 →
         oauth '계속하기' 동의 → tistory.com 복귀 순.
+
+        ID/PW 미설정 + 대화형 환경이면 수동 로그인 모드 — OAuth URL 진입 후
+        사용자가 직접 로그인하면 polling 으로 manage 도달 감지 (최대 5분).
         """
         email = os.getenv("TISTORY_EMAIL", "")
         password = os.getenv("TISTORY_PASSWORD", "")
-        if not email or not password:
-            log("TISTORY_EMAIL / TISTORY_PASSWORD 미설정", "error")
-            return False
+        manual_mode = not (email and password)
+
+        if manual_mode:
+            from common.browser_profile import _is_interactive
+            if not _is_interactive():
+                log("TISTORY_EMAIL / TISTORY_PASSWORD 미설정 + 비대화형 → 수동 로그인 불가", "error")
+                return False
+            log("[수동 로그인 모드] TISTORY_EMAIL/PASSWORD 미설정 → 브라우저에서 직접 로그인", "info")
 
         page = self._page
         try:
             # 로그인 후 자동으로 블로그별 manage 로 돌아가도록 redirectUrl 지정.
-            # 이렇게 하면 Kakao SSO 성공 시 www.tistory.com/ 가 아니라
-            # <blog>.tistory.com/manage 로 가서 블로그 세션 쿠키도 발급됨.
             from base64 import b64encode
             from urllib.parse import quote, urlencode
             redirect_url = f"{self.blog_url}/manage"
-
-            # 카카오 SDK 우회 — Kakao.Auth.authorize 는 prompt=select_account 를
-            # 강제로 붙여 신뢰토큰을 무효화한다. 직접 /oauth/authorize URL 을
-            # 만들어 navigate 하면 저장된 간편로그인 세션이 그대로 유지된다.
-            # state 는 티스토리 SDK 와 동일하게 redirectUrl 의 base64 인코딩.
             state = b64encode(redirect_url.encode("utf-8")).decode("ascii").rstrip("=")
             authorize_url = (
                 "https://kauth.kakao.com/oauth/authorize?"
@@ -221,7 +222,6 @@ class TistoryPublisher(Publisher):
                 page.goto(authorize_url, wait_until="domcontentloaded", timeout=30000)
                 log("  Kakao OAuth URL 직접 진입 (prompt 옵션 생략)", "info")
             except Exception as e:
-                # 폴백: 기존 경로 (티스토리 SDK 경유)
                 log(f"  /oauth/authorize 직접 진입 실패 — SDK 폴백: {e}", "warn")
                 page.goto(
                     f"https://www.tistory.com/auth/login?redirectUrl={quote(redirect_url, safe='')}",
@@ -235,6 +235,30 @@ class TistoryPublisher(Publisher):
                         break
                     except Exception:
                         continue
+
+            # 수동 모드: 사용자가 카카오 로그인 + 2단계 인증을 마칠 때까지 대기.
+            # manage 페이지에 도달하면 즉시 성공 처리.
+            if manual_mode:
+                log("  [수동 로그인] Chromium 창에서 카카오 로그인을 완료하세요", "info")
+                log("  [수동 로그인] manage 페이지 도달 시 자동 진행 (최대 300초 대기)", "info")
+                blog_host = self.blog_url.replace("https://", "").replace("http://", "")
+                deadline = time.time() + 300
+                last_url = ""
+                while time.time() < deadline:
+                    try:
+                        cur = page.url
+                        if cur != last_url:
+                            log(f"  [수동 로그인] 현재 URL: {cur[:120]}", "info")
+                            last_url = cur
+                        if blog_host in cur and "/manage" in cur and "/auth/" not in cur:
+                            log("  [수동 로그인] manage 도달 — 로그인 완료", "ok")
+                            time.sleep(2)
+                            return True
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                log("  [수동 로그인] timeout — 5분 내 로그인 안 됨", "error")
+                return False
 
             # Kakao 페이지 전환 대기 (최대 15초).
             # 카카오 신뢰토큰이 살아있으면 OAuth 가 카카오 도메인을 거치지 않고

@@ -15,9 +15,11 @@
 """
 import os
 import re
+import sys
 import time
 import random
 import subprocess
+import tempfile
 import hashlib
 import hmac as _hmac
 from urllib import parse
@@ -38,7 +40,25 @@ AF_CODE    = os.getenv("COUPANG_AF_CODE", "")
 CHANNEL_ID = os.getenv("COUPANG_CHANNEL_ID", "")
 FAKE_LINK  = os.getenv("COUPANG_FAKE_LINK", "")
 
-CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+def _resolve_chrome_path() -> str:
+    env = os.getenv("CHROME_PATH", "").strip()
+    if env and os.path.exists(env):
+        return env
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "win32":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+    return "google-chrome"
+
+
+CHROME_PATH = _resolve_chrome_path()
 CDP_PORT    = 9222
 
 # 모바일 에뮬레이션 설정 (Galaxy S21 기준)
@@ -85,8 +105,10 @@ def make_partners_link(product_url: str, channel_id: str = "") -> str:
 
 # ─── 로컬 크롬 모바일 모드 (CDP) ─────────────────────────────────────────────
 
-def _start_chrome_mobile(user_data_dir: str = "/tmp/coupang_chrome") -> subprocess.Popen:
+def _start_chrome_mobile(user_data_dir: str = "") -> subprocess.Popen:
     """로컬 크롬을 모바일 에뮬레이션 + 원격 디버깅 모드로 실행."""
+    if not user_data_dir:
+        user_data_dir = os.path.join(tempfile.gettempdir(), "coupang_chrome")
     os.makedirs(user_data_dir, exist_ok=True)
     cmd = [
         CHROME_PATH,

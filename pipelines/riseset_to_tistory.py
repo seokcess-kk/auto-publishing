@@ -56,8 +56,12 @@ def run() -> None:
     keyword    = random.choice(_SUNRISE_KEYWORDS)
     channel_id = os.getenv("COUPANG_CHANNEL_ID_TISTORY", "tistoryriseset")
     coupang    = CoupangSource(channel_id=channel_id)
-    products   = coupang.search(keyword, count=10)
     product    = None
+    try:
+        products = coupang.search(keyword, count=10)
+    except Exception as e:
+        log(f"쿠팡 크롤링 실패(무시): {e}", "warn")
+        products = []
     if products:
         product = products[-1]
         product["_keyword"] = keyword
