@@ -39,6 +39,10 @@ def _get_gemini():
 def _generate_with_claude(prompt: str) -> str:
     """Claude Code CLI(Max 플랜)로 텍스트 생성. Haiku 모델 사용."""
     try:
+        # Claude CLI 는 UTF-8 로 출력. Windows 기본 cp949 로 디코드하면
+        # 한글 첫 바이트(0xeb 등)에서 UnicodeDecodeError 가 나므로 명시적으로
+        # utf-8 + replace 로 강제. errors="replace" 는 깨진 바이트가 있어도
+        # 도입부 생성 자체가 멈추지 않게 한다.
         result = subprocess.run(
             [_CLAUDE_CLI, "-p", prompt,
              "--output-format", "text",
@@ -46,11 +50,12 @@ def _generate_with_claude(prompt: str) -> str:
              "--model", "haiku",
              "--system-prompt", "요청된 텍스트만 출력하세요. 설명, 주석, 구분선(---), 메타 정보 없이 본문만 작성하세요."],
             capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode == 0 and result.stdout.strip():
             log("Claude 생성 완료", "ok")
             return result.stdout.strip()
-        log(f"Claude 생성 실패: {result.stderr[:200]}", "error")
+        log(f"Claude 생성 실패: {(result.stderr or '')[:200]}", "error")
         return ""
     except Exception as e:
         log(f"Claude CLI 오류: {e}", "error")
