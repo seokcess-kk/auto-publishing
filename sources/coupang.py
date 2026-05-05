@@ -62,6 +62,11 @@ CHROME_PATH = _resolve_chrome_path()
 CDP_PORT    = 9222
 
 # 모바일 에뮬레이션 설정 (Galaxy S21 기준)
+# ※ 2026-05 기준 모바일 UA(Galaxy)를 Windows Chrome에 강제하면 Akamai 가
+#    sec-ch-ua-platform 불일치를 잡아 'Access Denied' 를 반환한다 (HTML 301B).
+#    그래서 _start_chrome_mobile() 은 실제로 모바일 UA 를 강제하지 않고,
+#    Chrome 의 데스크톱 기본 UA + 자연스러운 sec-ch-ua 헤더로 접근한다.
+#    상품 카드 셀렉터(ProductUnit_productUnit) 는 데스크톱/모바일이 동일하다.
 MOBILE_UA = (
     "Mozilla/5.0 (Linux; Android 13; SM-G991B) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -106,7 +111,7 @@ def make_partners_link(product_url: str, channel_id: str = "") -> str:
 # ─── 로컬 크롬 모바일 모드 (CDP) ─────────────────────────────────────────────
 
 def _start_chrome_mobile(user_data_dir: str = "") -> subprocess.Popen:
-    """로컬 크롬을 모바일 에뮬레이션 + 원격 디버깅 모드로 실행."""
+    """로컬 크롬을 원격 디버깅 모드로 실행 (Akamai 우회 위해 데스크톱 UA 사용)."""
     if not user_data_dir:
         user_data_dir = os.path.join(tempfile.gettempdir(), "coupang_chrome")
     os.makedirs(user_data_dir, exist_ok=True)
@@ -114,9 +119,8 @@ def _start_chrome_mobile(user_data_dir: str = "") -> subprocess.Popen:
         CHROME_PATH,
         f"--remote-debugging-port={CDP_PORT}",
         f"--user-data-dir={user_data_dir}",
-        f"--user-agent={MOBILE_UA}",
-        f"--window-size={MOBILE_WIDTH},{MOBILE_HEIGHT}",
-        "--headless=new",          # 창 없이 실행 (headless)
+        # headless / 모바일 UA / 모바일 viewport 강제는 Akamai 가 차단한다.
+        # 실제 데스크톱 Chrome 처럼 떠야 sec-ch-ua / sec-ch-ua-platform 일치.
         "--no-sandbox",
         "--disable-blink-features=AutomationControlled",
         "--disable-infobars",
@@ -124,7 +128,7 @@ def _start_chrome_mobile(user_data_dir: str = "") -> subprocess.Popen:
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)  # 크롬 기동 대기
-    log(f"크롬 모바일 모드 실행 (PID {proc.pid})", "info")
+    log(f"크롬 데스크톱 모드 실행 (PID {proc.pid})", "info")
     return proc
 
 
@@ -147,8 +151,8 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             page    = context.new_page()
 
-            # 모바일 viewport & UA 강제 설정
-            page.set_viewport_size({"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT})
+            # 데스크톱 모드로 동작 — Chrome 기본 viewport / UA / sec-ch-ua 그대로 사용.
+            # (모바일 viewport 강제는 Akamai 차단 트리거)
             page.set_extra_http_headers({
                 "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
             })
@@ -166,13 +170,17 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
                 timeout=20000,
                 wait_until="domcontentloaded",
             )
-            time.sleep(random.uniform(2, 3))
-
             log(f"응답 코드: {resp.status if resp else 'N/A'}", "info")
 
-            # 스크롤로 lazy load 트리거
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            time.sleep(1)
+            # React 하이드레이션이 끝날 때까지 상품 카드 셀렉터를 명시적으로 기다린다.
+            # (이전엔 scroll 을 즉시 호출해 hydration 중 context 가 파괴됐음)
+            try:
+                page.wait_for_selector(
+                    'li[class*="ProductUnit_productUnit"]',
+                    timeout=15000,
+                )
+            except Exception as e:
+                log(f"상품 카드 대기 timeout (계속 진행): {e}", "info")
 
             html = page.content()
             page.close()
