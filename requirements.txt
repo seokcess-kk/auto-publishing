@@ -1,5 +1,9 @@
 # 핵심 HTTP/크롤링
 requests>=2.31.0
+# requests 2.32.x 의 호환성 체크는 urllib3<2.3, chardet<6 만 허용한다.
+# 핀하지 않으면 매 실행마다 RequestsDependencyWarning 노이즈가 출력된다.
+urllib3>=2.0,<2.3
+chardet>=5.0,<6.0
 requests-toolbelt>=1.0.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
