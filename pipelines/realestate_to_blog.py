@@ -128,6 +128,7 @@ def run(count: int = 1,
         from common.notifier import notify_pipeline_result
         notify_pipeline_result(
             f"부동산→{target}", 0, count, details="신규 분양 없음",
+            reason="empty",
         )
         return
 
