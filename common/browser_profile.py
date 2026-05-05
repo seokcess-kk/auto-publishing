@@ -54,6 +54,46 @@ def _is_interactive() -> bool:
         return False
 
 
+def _kill_orphan_chromium_windows(profile_dir: Path) -> int:
+    """Windows 한정: 같은 persistent profile 을 점유한 orphan ms-playwright Chromium 정리.
+
+    파이프라인이 Ctrl+C / TaskKill / 작업 스케줄러 정지로 강제 종료되면
+    부모 Python 만 죽고 Chromium 자식 프로세스가 남아 user_data_dir 잠금을
+    유지한다. 다음 launch_persistent_context 호출은
+    'Target page, context or browser has been closed' 로 즉시 실패한다.
+
+    POSIX 는 SIGTERM 이 프로세스 그룹으로 잘 전파되어 일반적으로 불필요.
+
+    Returns: 정리한 프로세스 수
+    """
+    if sys.platform != "win32":
+        return 0
+    try:
+        import subprocess
+        # 디렉토리명 (예: 'tistory_shared_profile') 으로 cmdline 매칭.
+        # backslash escaping 회피 + 다른 프로필 영향 없음.
+        marker = profile_dir.name
+        ps_cmd = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.ExecutablePath -like '*ms-playwright*' -and "
+            f"$_.CommandLine -like '*{marker}*' " "} | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=10,
+        )
+        killed = [s.strip() for s in result.stdout.splitlines() if s.strip().isdigit()]
+        if killed:
+            log(f"[browser_profile] orphan Chromium {len(killed)}개 정리 ({marker}): "
+                f"PID {', '.join(killed)}", "warn")
+            time.sleep(1)  # OS 가 파일 핸들/잠금 풀 시간
+        return len(killed)
+    except Exception as e:
+        log(f"[browser_profile] orphan 정리 예외 (무시): {e}", "info")
+        return 0
+
+
 class PersistentBrowserProfile:
     """플랫폼별 영속 브라우저 프로필.
 
@@ -88,6 +128,7 @@ class PersistentBrowserProfile:
             raise RuntimeError("playwright 미설치: pip install playwright && playwright install chromium")
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        _kill_orphan_chromium_windows(self.user_data_dir)
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(self.user_data_dir),

@@ -115,6 +115,11 @@ class TistoryPublisher(Publisher):
             return False
 
         self.profile.user_data_dir.mkdir(parents=True, exist_ok=True)
+        # 이전 실행이 강제 종료돼 orphan Chromium 이 프로파일을 점유 중이면
+        # launch_persistent_context 가 즉시 실패한다. 직접 launch 경로라
+        # PersistentBrowserProfile.launch() 의 청소가 안 걸리므로 여기서 호출.
+        from common.browser_profile import _kill_orphan_chromium_windows
+        _kill_orphan_chromium_windows(self.profile.user_data_dir)
         self._playwright = sync_playwright().start()
         try:
             self._context = self._playwright.chromium.launch_persistent_context(
