@@ -20,6 +20,7 @@ Python 3.9+ · Playwright · WordPress / Tistory / Naver / GitHub Pages / Twitte
 8. [발행 플랫폼](#발행-플랫폼)
 9. [파이프라인 카탈로그](#파이프라인-카탈로그)
 10. [스케줄러](#스케줄러)
+    - [Windows 운영](#windows-운영-작업-스케줄러)
 11. [알림 시스템](#알림-시스템-텔레그램--카카오톡-병행)
 12. [환경변수](#환경변수-env)
 13. [발행 콘텐츠 예시](#발행-콘텐츠-예시)
@@ -509,6 +510,65 @@ SCHEDULE_THREADS_REFRESH=03:00           # Threads 토큰 갱신
 ```
 
 값을 비우면 해당 파이프라인은 자동 실행에서 제외됩니다.
+
+### Windows 운영 (작업 스케줄러)
+
+Windows에는 `nohup` 이 없으므로 **작업 스케줄러**에 등록해 사용자 로그온 시
+자동으로 띄우는 방식을 권장합니다. PowerShell 설치 스크립트가 동봉돼 있어
+1회 실행으로 끝납니다.
+
+```powershell
+# 프로젝트 루트에서
+powershell -ExecutionPolicy Bypass -File scripts\install_scheduler_task.ps1
+```
+
+스크립트 동작:
+- `AutoPublishingScheduler` 라는 이름의 작업을 생성 (재실행 시 기존 것 자동 제거)
+- 트리거: 현재 사용자 **로그온 시**
+- 액션: `scripts\run_scheduler.bat` (PYTHONIOENCODING=utf-8 으로 `python -m
+  pipelines.scheduler_runner` 실행, stdout 을 `scheduler.log` 에 누적)
+- 설정: 실행 시간 제한 없음, 실패 시 1분 간격 3회 재시도, 배터리 무관 실행
+- Principal: Interactive (브라우저 자동화에 데스크톱 세션 필요)
+
+| 작업 | PowerShell |
+|------|-----------|
+| 즉시 시작 | `Start-ScheduledTask -TaskName 'AutoPublishingScheduler'` |
+| 정지 | `Stop-ScheduledTask -TaskName 'AutoPublishingScheduler'` |
+| 상태 확인 | `Get-ScheduledTask -TaskName 'AutoPublishingScheduler'` |
+| 로그 모니터링 | `Get-Content scheduler.log -Tail 50 -Wait` |
+| 작업 제거 | `Unregister-ScheduledTask -TaskName 'AutoPublishingScheduler' -Confirm:$false` |
+
+#### 운영 주의사항
+
+**콘솔 한글 mojibake** — Windows 기본 콘솔 코드 페이지 (cp949) 가 로그의
+`—` `📊` 등을 못 출력해 `UnicodeEncodeError` 가 난다. wrapper 배치가
+`PYTHONIOENCODING=utf-8` 을 강제하므로 작업 스케줄러로 돌릴 때는 문제
+없지만, 직접 CLI 로 디버깅할 때는 실행 전에 다음을 적용한다.
+
+```powershell
+$env:PYTHONIOENCODING = 'utf-8'
+python -u -m pipelines.scheduler_runner
+```
+
+**orphan Playwright Chromium 정리** — 파이프라인을 실행 도중 강제 종료
+(Ctrl+C / TaskKill / 작업 스케줄러 정지) 하면 부모 Python 만 죽고 Playwright
+가 띄운 Chromium 자식 프로세스가 남아 `.sessions/<name>_profile/` 잠금을
+유지한다. 다음 실행이 `BrowserType.launch_persistent_context: Target page,
+context or browser has been closed` 로 실패하면 다음을 1회 실행한다.
+
+```powershell
+Get-CimInstance Win32_Process |
+    Where-Object { $_.ExecutablePath -like '*ms-playwright*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+(사용자가 평소 쓰는 Google Chrome 은 `Program Files\Google\Chrome\...` 에
+설치돼 있어 위 필터에 걸리지 않으니 안전하다.)
+
+**카카오 토큰 초기 발급** — `scripts/kakao_auth.py` 가 띄우는 브라우저는
+`https://localhost:5000/?code=...` 로 리다이렉트되며 "사이트에 연결할 수
+없습니다" 페이지가 뜬다. 이게 정상 — 주소창의 URL 전체를 복사해 터미널에
+붙여넣으면 토큰이 발급된다.
 
 ---
 
