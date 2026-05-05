@@ -34,8 +34,24 @@ def collect_and_save_cookies() -> dict:
 
         input(">>> 로그인 완료 후 Enter <<<")
 
-        # blog.naver.com 방문 → blog 전용 쿠키 수집
-        page.goto("https://blog.naver.com", wait_until="networkidle", timeout=15000)
+        # 로그인 완료 검증: NID_AUT 쿠키가 있는지 먼저 확인.
+        # 미완료 상태에서 blog.naver.com 으로 가면 nid.naver.com 으로 redirect
+        # 되며 Playwright 가 'Navigation interrupted' 예외를 던지므로,
+        # 이 시점에 쿠키만 보고 빠르게 실패시키는 편이 명확하다.
+        pre_cookies = context.cookies(["https://www.naver.com", "https://nid.naver.com"])
+        pre_names = {c["name"] for c in pre_cookies}
+        if not (pre_names & {"NID_AUT", "NID_SES"}):
+            print("NID_AUT/NID_SES 쿠키가 없습니다 — 로그인이 완료되지 않은 것 같습니다.")
+            print("브라우저에서 로그인(캡차·2단계 포함)을 마친 뒤 재실행하세요.")
+            browser.close()
+            return {}
+
+        # blog.naver.com 방문 → blog 전용 쿠키도 함께 적재.
+        # networkidle 은 광고/추적 스크립트로 timeout 이 자주 나서 domcontentloaded 사용.
+        try:
+            page.goto("https://blog.naver.com", wait_until="domcontentloaded", timeout=15000)
+        except Exception as e:
+            print(f"blog.naver.com 이동 실패 (계속 진행): {e}")
 
         # 쿠키 추출
         cookies = context.cookies(["https://www.naver.com", "https://blog.naver.com",
