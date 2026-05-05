@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -21,10 +22,39 @@ from .logger import log
 
 # ─── Naver CDP 로그인 ────────────────────────────────────────────────────────
 
-CHROME_PATH    = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CDP_PORT_NAVER = 9223   # 쿠팡(9222)과 포트 분리
-CHROME_PROFILE = os.getenv("NAVER_CHROME_PROFILE", "Profile 2")  # 네이버 로그인된 프로필
-CHROME_USER_DATA = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+def _resolve_chrome_path() -> str:
+    env = os.getenv("CHROME_PATH", "").strip()
+    if env and os.path.exists(env):
+        return env
+    if sys.platform == "darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if sys.platform == "win32":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+    return "google-chrome"
+
+
+def _resolve_chrome_user_data() -> str:
+    env = os.getenv("CHROME_USER_DATA", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    if sys.platform == "win32":
+        return os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
+    return os.path.expanduser("~/.config/google-chrome")
+
+
+CHROME_PATH      = _resolve_chrome_path()
+CDP_PORT_NAVER   = 9223   # 쿠팡(9222)과 포트 분리
+CHROME_PROFILE   = os.getenv("NAVER_CHROME_PROFILE", "Profile 2")  # 네이버 로그인된 프로필
+CHROME_USER_DATA = _resolve_chrome_user_data()
 
 
 def naver_login_cdp(session: requests.Session) -> bool:

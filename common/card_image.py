@@ -72,12 +72,17 @@ TINT_GOLD         = "#FEF3C7"   # 골드 틴트 배경
 
 # ─── 폰트 탐색 ────────────────────────────────────────────────────────────────
 
-# 사용자 환경에서 가장 가능성 높은 한글 폰트 후보 (macOS → Linux 순)
+# 사용자 환경에서 가장 가능성 높은 한글 폰트 후보 (macOS → Windows → Linux 순)
 _FONT_CANDIDATES = [
     # macOS
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
     "/Library/Fonts/AppleGothic.ttf",
     "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+    # Windows (기본 한글 폰트 + 사용자가 설치할 만한 Nanum)
+    r"C:\Windows\Fonts\malgun.ttf",
+    r"C:\Windows\Fonts\malgunbd.ttf",
+    r"C:\Windows\Fonts\NanumGothic.ttf",
+    r"C:\Windows\Fonts\NanumBarunGothic.ttf",
     # Linux (Noto, Nanum 등이 깔린 경우)
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",

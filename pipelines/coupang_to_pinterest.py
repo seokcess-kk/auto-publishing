@@ -15,6 +15,7 @@
 import os
 import sys
 import random
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,7 +35,10 @@ SCHEDULE = {
 
 
 BOARD_NAME = os.getenv("PINTEREST_BOARD_NAME", "How RU")
-IMAGE_TMP_DIR = Path(os.getenv("PINTEREST_TMP_DIR", "/tmp/pinterest_pipeline"))
+IMAGE_TMP_DIR = Path(os.getenv(
+    "PINTEREST_TMP_DIR",
+    os.path.join(tempfile.gettempdir(), "pinterest_pipeline"),
+))
 
 DEFAULT_KEYWORDS = [
     "인기상품", "베스트셀러", "추천상품", "주방용품", "생활용품",

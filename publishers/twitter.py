@@ -6,6 +6,7 @@
 참조: 04.Platform_Social/twitter/twitter(reqeusts)_뉴스픽(requests)_자동발행_배포용_ver6.py
 """
 import os
+import sys
 import json
 import pickle
 from typing import Optional
@@ -17,9 +18,31 @@ from common.logger import log
 from .base import Publisher, PostResult
 
 
-CHROME_COOKIE_FILE = os.path.expanduser(
-    "~/Library/Application Support/Google/Chrome/Profile 2/Cookies"
-)
+def _resolve_chrome_cookie_file() -> str:
+    """플랫폼별 Chrome 쿠키 파일 경로 결정.
+
+    TWITTER_CHROME_COOKIE_FILE 환경변수로 직접 지정 가능.
+    프로필 이름은 TWITTER_CHROME_PROFILE (기본 'Profile 2').
+    """
+    env = os.getenv("TWITTER_CHROME_COOKIE_FILE", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    profile = os.getenv("TWITTER_CHROME_PROFILE", "Profile 2")
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    elif sys.platform == "win32":
+        base = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
+    else:
+        base = os.path.expanduser("~/.config/google-chrome")
+    # Chrome 96+ 은 Network/Cookies, 그 이전은 Cookies. 존재하는 쪽 사용.
+    for rel in (("Network", "Cookies"), ("Cookies",)):
+        path = os.path.join(base, profile, *rel)
+        if os.path.exists(path):
+            return path
+    return os.path.join(base, profile, "Network", "Cookies")
+
+
+CHROME_COOKIE_FILE = _resolve_chrome_cookie_file()
 SESSION_FILE = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), ".sessions", "twitter.pkl"
 )
