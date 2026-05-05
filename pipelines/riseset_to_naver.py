@@ -128,7 +128,12 @@ def run() -> None:
         "일출일몰→네이버블로그",
         success, 1,
         details=f"{title[:40]}" if result.success else result.message,
+        url=result.url or "",
     )
+
+    if result.success and result.url:
+        from common.publish_queue import add_url as _add_url
+        _add_url(result.url, platform="naver_blog", title=title)
 
 
 if __name__ == "__main__":

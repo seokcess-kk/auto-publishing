@@ -54,6 +54,7 @@ def run_blog(category: str = "추천", count: int = 1) -> None:
 
     articles  = newspick.fetch_with_links(category=category, count=count)
     published = 0
+    last_url = ""
     for article in articles:
         title   = article["title"]
         content = f'<p><a href="{article["short_url"]}">{title}</a></p>'
@@ -69,12 +70,16 @@ def run_blog(category: str = "추천", count: int = 1) -> None:
         )
         if result.success:
             published += 1
+            if result.url:
+                last_url = result.url
+                from common.publish_queue import add_url as _add_url
+                _add_url(result.url, platform="naver_blog", title=title)
         time.sleep(random.uniform(15, 30))
 
     log(f"네이버 블로그 완료: {published}/{count}건", "step")
 
     from common.notifier import notify_pipeline_result
-    notify_pipeline_result("뉴스픽→네이버블로그", published, count)
+    notify_pipeline_result("뉴스픽→네이버블로그", published, count, url=last_url)
 
 
 def run_cafe(category: str = "추천", count: int = 1) -> None:
@@ -99,6 +104,7 @@ def run_cafe(category: str = "추천", count: int = 1) -> None:
 
     articles  = newspick.fetch_with_links(category=category, count=count)
     published = 0
+    last_url = ""
     for article in articles:
         title   = article["title"]
         content = f'<p><a href="{article["short_url"]}">{title}</a></p>'
@@ -114,12 +120,16 @@ def run_cafe(category: str = "추천", count: int = 1) -> None:
         )
         if result.success:
             published += 1
+            if result.url:
+                last_url = result.url
+                from common.publish_queue import add_url as _add_url
+                _add_url(result.url, platform="naver_cafe", title=title)
         time.sleep(random.uniform(15, 30))
 
     log(f"네이버 카페 완료: {published}/{count}건", "step")
 
     from common.notifier import notify_pipeline_result
-    notify_pipeline_result("뉴스픽→네이버카페", published, count)
+    notify_pipeline_result("뉴스픽→네이버카페", published, count, url=last_url)
 
 
 if __name__ == "__main__":
