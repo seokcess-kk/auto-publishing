@@ -8,6 +8,19 @@ import logging
 import sys
 from datetime import datetime
 
+
+# Windows 기본 콘솔 코드 페이지(cp949) 가 '—' / '🚀' 등 BMP 외 문자를 출력
+# 못해 UnicodeEncodeError 가 난다. 모듈 import 시 stdout/stderr 인코딩을
+# utf-8 + replace 로 한 번 reconfigure 해 매 실행 PYTHONIOENCODING 설정을
+#강요하지 않도록 한다.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            # stdout/stderr 이 redirect 됐거나 reconfigure 미지원이면 그대로 둔다.
+            pass
+
 # ANSI 컬러 코드
 C_RESET  = "\033[0m"
 C_BOLD   = "\033[1m"
