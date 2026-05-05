@@ -102,7 +102,12 @@ class NewspickSource:
         return injected
 
     def _page_has_session(self, context, page) -> bool:
-        """로그인 완료 페이지에 도달했는지(SESSION 쿠키 존재)."""
+        """로그인 완료 페이지에 도달했는지(SESSION 쿠키 + 비-login URL).
+
+        partners 가 anonymous 사용자에게도 SESSION 을 발급하므로 SESSION 쿠키
+        하나만으로는 인증 여부 판단이 불가하다. URL 이 /login 을 벗어난 상태
+        에서 SESSION 도 있으면 진짜 인증된 것.
+        """
         try:
             if "/login" in page.url:
                 return False
@@ -211,9 +216,13 @@ class NewspickSource:
         """
         email = os.getenv("NEWSPICK_ID", "")
         password = os.getenv("NEWSPICK_PW", "")
-        if not email or not password:
-            log("NEWSPICK_ID/NEWSPICK_PW 미설정", "error")
-            return False
+        # ID/PW 미설정이라도 영속 프로필에 카카오 간편로그인 토큰이 살아 있으면
+        # popup 이 곧바로 /oauth/authorize (이미 인증됨, 동의 단계) 로 떨어져
+        # '계속하기' 클릭만으로 로그인이 완료된다. 그래서 ID/PW 부재로 즉시
+        # 종료하지 않고 popup 진입까지 진행한다.
+        creds_available = bool(email and password)
+        if not creds_available:
+            log("NEWSPICK_ID/NEWSPICK_PW 미설정 — 영속 프로필 의존 모드로 시도", "info")
 
         id_selectors = [
             'input[name="loginKey"]',
@@ -257,10 +266,16 @@ class NewspickSource:
             #  (B) /login/simple          간편로그인 — 저장된 계정 클릭
             #  (C) 일반 로그인 폼          ID/PW 자동 입력
             cur_url = kakao_page.url
-            if "/oauth/authorize" in cur_url:
+            # /oauth/authorize, /oauth/code/confirm 모두 '이미 인증됨, 동의/계속'
+            # 단계로 ID/PW 입력이 필요 없는 경로다.
+            if "/oauth/authorize" in cur_url or "/oauth/code/confirm" in cur_url:
                 log("  이미 Kakao 로그인됨 — oauth 동의 단계로 바로 이동", "info")
                 on_login_form = False
             elif "/login/simple" in cur_url or "simpleLogin" in cur_url:
+                if not creds_available:
+                    log("  간편로그인 화면이지만 NEWSPICK_ID 미설정 — 자동 클릭 불가", "error")
+                    log("  partners.newspic.kr 에서 ID/PW 로그인 후 영속 프로필 의존 모드로 재시도하세요", "info")
+                    return False
                 log("  간편로그인 화면 감지 — 저장된 계정 클릭", "info")
                 if not self._click_saved_account(kakao_page, email):
                     log("  간편로그인 클릭 실패 — Kakao SSO 중단", "error")
@@ -268,6 +283,10 @@ class NewspickSource:
                 on_login_form = False
             else:
                 on_login_form = True
+
+            if on_login_form and not creds_available:
+                log(f"  일반 로그인 폼 진입했으나 NEWSPICK_ID/PW 미설정 — 자동 입력 불가 (URL: {kakao_page.url})", "error")
+                return False
 
             if on_login_form:
                 # ID 입력
@@ -364,8 +383,8 @@ class NewspickSource:
                         if p_url != last_popup:
                             log(f"  popup URL → {p_url}", "info")
                             last_popup = p_url
-                        # oauth 동의 화면 감지 시 "계속하기" 클릭 (여러 번 재시도)
-                        if not consent_clicked and "oauth/authorize" in p_url:
+                        # oauth 동의/확인 화면 감지 시 "계속하기" 클릭 (여러 번 재시도)
+                        if not consent_clicked and ("oauth/authorize" in p_url or "oauth/code/confirm" in p_url):
                             clicked_now = False
                             # 1) text 기반 role=button 선호 (Kakao 가 자주 바꾸는 클래스에 덜 의존)
                             for sel in [
