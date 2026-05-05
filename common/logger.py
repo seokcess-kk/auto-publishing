@@ -76,19 +76,45 @@ def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _safe_print(line: str, *, file=None) -> None:
+    """print() 가 stdout 인코딩(cp949 등)으로 실패해도 안전하게 출력.
+
+    common/__init__.py 에서 stdout/stderr 을 utf-8 로 reconfigure 해 두지만
+    스레드/서브프로세스 wrapping 등 일부 경로에서 그게 적용 안 될 때를
+    대비한 belt-and-suspenders.
+    """
+    target = file if file is not None else sys.stdout
+    try:
+        print(line, file=target)
+        return
+    except UnicodeEncodeError:
+        pass
+    enc = getattr(target, "encoding", None) or "ascii"
+    safe = line.encode(enc, errors="replace").decode(enc, errors="replace")
+    try:
+        print(safe, file=target)
+    except Exception:
+        # 마지막 보루 — bytes 로 직접 쓴다
+        try:
+            target.buffer.write(line.encode("utf-8", errors="replace") + b"\n")
+            target.buffer.flush()
+        except Exception:
+            pass
+
+
 def log(msg: str, level: str = "info") -> None:
     """레벨별 컬러 콘솔 출력. (하위 호환 wrapper)"""
     ts = f"{C_GRAY}[{_now()}]{C_RESET}"
     lv = level.lower()
     if lv == "info":
-        print(f"{ts} {C_BLUE}[INFO]{C_RESET}  {msg}")
+        _safe_print(f"{ts} {C_BLUE}[INFO]{C_RESET}  {msg}")
     elif lv in ("ok", "success"):
-        print(f"{ts} {C_GREEN}[OK]{C_RESET}    {msg}")
+        _safe_print(f"{ts} {C_GREEN}[OK]{C_RESET}    {msg}")
     elif lv in ("warn", "warning"):
-        print(f"{ts} {C_YELLOW}[WARN]{C_RESET}  {msg}")
+        _safe_print(f"{ts} {C_YELLOW}[WARN]{C_RESET}  {msg}")
     elif lv == "error":
-        print(f"{ts} {C_RED}[ERROR]{C_RESET} {msg}", file=sys.stderr)
+        _safe_print(f"{ts} {C_RED}[ERROR]{C_RESET} {msg}", file=sys.stderr)
     elif lv == "step":
-        print(f"{ts} {C_CYAN}{C_BOLD}>> {msg}{C_RESET}")
+        _safe_print(f"{ts} {C_CYAN}{C_BOLD}>> {msg}{C_RESET}")
     else:
-        print(f"{ts} {msg}")
+        _safe_print(f"{ts} {msg}")
