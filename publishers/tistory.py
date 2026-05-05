@@ -968,10 +968,34 @@ class TistoryPublisher(Publisher):
         except Exception:
             data = {}
 
-        post_id = str(data.get("id") or data.get("postId") or "")
-        post_url = data.get("url") or data.get("permalink") or ""
+        # 티스토리 /manage/post.json 응답: 현재(2026-05) `entryUrl` 만 반환.
+        # 과거 키들(id/postId, url/permalink) 도 호환 차원에서 함께 시도.
+        post_url = (
+            data.get("entryUrl")
+            or data.get("url")
+            or data.get("permalink")
+            or data.get("postUrl")
+            or ""
+        )
+        post_id = str(
+            data.get("id")
+            or data.get("postId")
+            or data.get("entryId")
+            or ""
+        )
+        # post_url 에서 post_id 추출 (예: https://blog.tistory.com/123 → '123')
+        if post_url and not post_id:
+            import re as _re
+            m = _re.search(r"/(\d+)/?$", post_url)
+            if m:
+                post_id = m.group(1)
+        # 반대로 post_id 만 있고 url 비면 합성
         if post_id and not post_url:
             post_url = f"{self.blog_url}/{post_id}"
+
+        if not post_url:
+            keys_preview = list(data.keys())[:10] if isinstance(data, dict) else type(data).__name__
+            log(f"티스토리 응답에서 url/id 추출 실패 — 응답 키: {keys_preview}", "warn")
 
         log(f"티스토리 발행 성공: {post_url}", "ok")
         return PostResult(success=True, url=post_url, post_id=post_id)
