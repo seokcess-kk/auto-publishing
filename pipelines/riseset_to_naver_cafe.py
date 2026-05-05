@@ -204,9 +204,14 @@ def run() -> None:
         except Exception as e:
             log(f"댓글 작성 실패 (무시): {e}", "warn")
 
+    if result.url:
+        from common.publish_queue import add_url as _add_url
+        _add_url(result.url, platform="naver_cafe", title=title)
+
     notify_pipeline_result(
         "일출일몰→네이버카페", 1, 1,
-        details=f"{date_kor} · {result.url}",
+        details=date_kor,
+        url=result.url or "",
     )
 
 

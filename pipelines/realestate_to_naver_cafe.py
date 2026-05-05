@@ -136,6 +136,7 @@ def run(count: int = 1, days_ahead: int = 30,
 
     today = datetime.now()
     published = 0
+    last_url = ""
     for it in targets:
         house_nm  = it.get("HOUSE_NM", "")
         area_nm   = it.get("SUBSCRPT_AREA_CODE_NM", "")
@@ -194,6 +195,10 @@ def run(count: int = 1, days_ahead: int = 30,
 
         article_id = result.post_id or ""
         published += 1
+        last_url = result.url or ""
+        if last_url:
+            from common.publish_queue import add_url as _add_url
+            _add_url(last_url, platform="naver_cafe", title=title)
         mgmt = it.get("HOUSE_MANAGE_NO") or ""
         if mgmt:
             history.add(mgmt)
@@ -232,6 +237,7 @@ def run(count: int = 1, days_ahead: int = 30,
     notify_pipeline_result(
         "부동산→네이버카페", published, count,
         details=f"지역: {', '.join(regions)}",
+        url=last_url,
     )
 
 
