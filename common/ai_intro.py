@@ -27,10 +27,23 @@ from sources.gemini_generator import GeminiGenerator
 _META_PREFIX_RE = re.compile(
     r"^[^\n]*?(도입부입니다|후킹 멘트입니다|후킹입니다|한 줄 후킹|"
     r"멘트입니다|작성한 글입니다|글입니다|추천 글입니다|"
-    r"이 글은|다음은|아래는|상품 \d+종에 대한|상품 \d+개에 대한)"
-    r"[^\n]*?[:\.]\s*",
+    r"제목입니다|제목들입니다|제목들을|블로그 제목|"
+    r"키워드와 .* 상품을 활용|이 글은|다음은|아래는|"
+    r"상품 \d+종에 대한|상품 \d+개에 대한)"
+    r"[^\n]*?[:\.]?\s*",
     re.M,
 )
+
+
+# 응답 본문에 등장하면 명백히 메타/안내 — 제목 검증 시 폴백 트리거
+_TITLE_META_KEYWORDS = (
+    "키워드와", "상품을 활용",
+    "제목을", "제목들", "제목 추천", "제목 후보", "제목 5개", "제목 3개",
+    "블로그 제목", "발행 제목", "추천 제목", "메인 추천",
+    "쇼핑 블로그", "한국어 쇼핑",
+    "추천 글", "세 가지 상품", "다음과 같", "아래와 같", "출력 형식",
+)
+_TITLE_FORBIDDEN_TOKENS = ("##", "**", "###", "[1]", "[2]", "1.", "2.", "3.")
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _HEAD_RE = re.compile(r"^[#-]+\s*", re.M)
 _NUMBER_PREFIX_RE = re.compile(r"^\s*\d+\s*[\.\)\-:]\s*")
@@ -723,6 +736,60 @@ def generate_product_intro(keyword: str, products: list) -> str:
         else:
             cleaned = cut
     return cleaned
+
+
+def generate_product_title(keyword: str, products: list) -> str:
+    """35~45자 한국어 발행 제목 생성. 키워드 + 상품 핵심어 + 후킹.
+
+    네이버 블로그 모바일/PC, 티스토리, 구글 SERP 모두 안 잘리는 길이.
+    AI 실패/거부 시 빈 문자열 반환 — 호출 측이 폴백 템플릿 사용.
+    """
+    if not products:
+        return ""
+    top3 = [p.get("name", "") for p in products[:3]][:3]
+    n = len(products)
+    prompt = (
+        f"키워드 '{keyword}' 와 상품 ({', '.join(top3)}) 로 한국어 쇼핑 블로그 "
+        f"발행 제목을 작성하세요.\n\n"
+        f"제약 (반드시 지킬 것):\n"
+        f"- 정확히 35~45자 (절대 45자 초과 금지)\n"
+        f"- 키워드 '{keyword}' 를 제목 앞쪽 절반에 1회 노출\n"
+        f"- 상품 핵심어 1개를 본문에 자연스럽게 녹임\n"
+        f"- 클릭 유도 요소 — 숫자(TOP{n} 등), 감정어(꿀템/베스트/인기/추천), "
+        f"질문, 구체 효용 중 1가지 포함\n"
+        f"- 마침표·따옴표·이모지·해시태그·괄호 라벨·마크다운 금지\n"
+        f"- 제목 1줄만 출력 (메타 설명 금지)"
+    )
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 제목 생성 ({provider}): {keyword}", "step")
+    raw = generate_text(prompt, provider=provider, max_len=60)
+    cleaned = _clean_ai_output(raw)
+    # 응답 전체 검사 — 마크다운/번호 매김(여러 후보 응답 신호)이 1개라도
+    # 등장하면 폴백 (모델이 제목 1개 대신 안내문 + 후보 여러 개를 뱉은 것)
+    if cleaned:
+        if any(tok in cleaned for tok in _TITLE_FORBIDDEN_TOKENS):
+            log(f"AI 제목 응답에 마크다운/번호 매김 — 폴백으로 전환: "
+                f"{cleaned[:50]}...", "warn")
+            return ""
+        # 줄바꿈 2개 이상 = 다중 후보 응답
+        if cleaned.count("\n") >= 2:
+            log(f"AI 제목 응답이 다중 줄 — 폴백으로 전환: "
+                f"{cleaned[:50]}...", "warn")
+            return ""
+
+    # 첫 줄만 사용 + 길이 절단
+    first = cleaned.split("\n")[0].strip(" \t-•·\"'") if cleaned else ""
+    if not first:
+        return ""
+    # 메타/안내 응답 패턴이 본문에 박혔으면 폴백 트리거
+    if any(kw in first for kw in _TITLE_META_KEYWORDS):
+        log(f"AI 제목이 메타 응답 — 폴백으로 전환: {first[:40]}...", "warn")
+        return ""
+    if len(first) > 45:
+        first = first[:45].rsplit(" ", 1)[0] if " " in first[:45] else first[:45]
+    if len(first) < 20:  # 너무 짧으면 폴백 트리거
+        return ""
+    return first
 
 
 def generate_product_pick_reasons(keyword: str, products: list) -> list:

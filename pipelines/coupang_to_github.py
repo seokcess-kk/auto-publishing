@@ -90,7 +90,8 @@ def build_markdown(keyword: str, products: list) -> tuple:
     if not products:
         return "", "", "", []
 
-    title = f"[{keyword}] TOP{len(products)} 추천 - {products[0]['name'][:69]}"
+    from common.product_html import make_product_title
+    title = make_product_title(keyword, products)
     category = "shopping"
     tags = ["Top10", "shopping", keyword]
 

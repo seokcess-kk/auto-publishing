@@ -4,6 +4,7 @@
 쿠팡/알리 등 상품형 파이프라인이 공유하는 카드 템플릿.
 차이는 ProductTheme 데이터클래스로 주입.
 """
+import random
 from dataclasses import dataclass, field
 from typing import List
 
@@ -75,6 +76,80 @@ def _build_card(idx: int, product: dict, theme: ProductTheme) -> str:
     )
 
 
+def _shorten_product_name(name: str, limit: int) -> str:
+    """상품명 끝에서 단어 경계로 절단 — 영문 토큰 잘림 방지."""
+    if not name or len(name) <= limit:
+        return name or ""
+    cut = name[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut
+
+
+def make_product_title(keyword: str, products: list) -> str:
+    """발행 제목 생성 — 35~45자 목표.
+
+    1) AI(generate_product_title) 시도 — 성공 시 그 결과 사용
+    2) 실패/짧음 시 5개 폴백 템플릿 중 랜덤 선택 (매 발행 다양성 확보)
+
+    모든 폴백 템플릿은 키워드/상품명 길이에 따라 45자 이내로 자동 절단된다.
+    """
+    if not products:
+        return f"{keyword} 추천 모음"
+
+    # 1) AI 우선
+    try:
+        from common.ai_intro import generate_product_title as _ai_title
+        ai = _ai_title(keyword, products)
+        if ai and 20 <= len(ai) <= 45:
+            return ai
+    except Exception:
+        pass
+
+    # 2) 폴백 템플릿 — 모두 45자 이내가 되도록 상품명 길이 동적 조정
+    n = len(products)
+    pname = products[0].get("name", "") or ""
+    kw = keyword.strip()
+
+    # 키워드 + 패턴 토큰 길이를 빼고 남은 자리만큼 상품명 절단
+    candidates: list = []
+
+    # T1: "{kw} 인기 TOP{n} - {짧은 상품명}"
+    fixed = len(kw) + len(f" 인기 TOP{n} - ")
+    if fixed < 45:
+        candidates.append(f"{kw} 인기 TOP{n} - {_shorten_product_name(pname, 45 - fixed)}")
+
+    # T2: "지금 핫한 {kw} 베스트{n} 모음 - {짧은 상품명}"
+    fixed = len(kw) + len(f"지금 핫한  베스트{n} 모음 - ")
+    if fixed < 45:
+        candidates.append(
+            f"지금 핫한 {kw} 베스트{n} 모음 - {_shorten_product_name(pname, 45 - fixed)}"
+        )
+
+    # T3: "{kw} 추천 BEST{n}: {짧은 상품명} 외"
+    fixed = len(kw) + len(f" 추천 BEST{n}:  외")
+    if fixed < 45:
+        candidates.append(
+            f"{kw} 추천 BEST{n}: {_shorten_product_name(pname, 45 - fixed)} 외"
+        )
+
+    # T4: "꼭 알아야 할 {kw} TOP{n} 후기 정리"
+    t4 = f"꼭 알아야 할 {kw} TOP{n} 후기 정리"
+    if 25 <= len(t4) <= 45:
+        candidates.append(t4)
+
+    # T5: "{kw} 살까 말까? 인기 {n}종 비교"
+    t5 = f"{kw} 살까 말까? 인기 {n}종 비교"
+    if 20 <= len(t5) <= 45:
+        candidates.append(t5)
+
+    # 안전망: 어떤 후보도 안 만들어졌으면 기본 템플릿
+    if not candidates:
+        return f"{kw} TOP{n} 추천"
+
+    return random.choice(candidates)
+
+
 def _build_top_cta_html(top_product: dict, theme: ProductTheme) -> str:
     """인트로 직후 above-the-fold CTA 박스 — 첫 화면에서 바로 클릭 가능하도록.
 
@@ -116,7 +191,7 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
     if not products:
         return "", "", "", ""
 
-    title = f"{keyword} TOP{len(products)} 추천 - {products[0]['name'][:50]}"
+    title = make_product_title(keyword, products)
     slug  = products[0]["name"][:69].replace(" ", "-")
 
     excerpt = theme.excerpt_template.format(keyword=keyword, count=len(products))
