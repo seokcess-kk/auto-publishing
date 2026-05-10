@@ -238,7 +238,8 @@ def run_oauth_flow() -> Optional[str]:
     auth_params = {
         "client_id":     cfg["app_id"],
         "redirect_uri":  cfg["redirect_uri"],
-        "scope":         "threads_basic,threads_content_publish",
+        # threads_manage_replies 가 있어야 reply chain 발행 가능
+        "scope":         "threads_basic,threads_content_publish,threads_manage_replies",
         "response_type": "code",
     }
     auth_url = "https://threads.net/oauth/authorize?" + urlencode(auth_params)

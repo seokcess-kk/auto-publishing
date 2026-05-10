@@ -98,11 +98,30 @@ class ThreadsPublisher(Publisher):
     # Threads API 내부 메서드
     # ------------------------------------------------------------------
 
+    def post_reply(self, parent_post_id: str, text: str) -> PostResult:
+        """기존 게시물에 reply (답글) 발행 — Threads 스레드 체인용.
+
+        Args:
+            parent_post_id: 부모 post_id (PostResult.post_id 그대로 사용)
+            text: reply 본문 (500자 제한, publisher 가 자르지 않음 — caller 책임)
+        """
+        if len(text) > 500:
+            text = text[:497] + "..."
+        log(f"Threads reply 준비 (parent={parent_post_id[:12]}...): {text[:50]}", "step")
+        container_id = self._create_container(
+            text, media_type="TEXT", reply_to_id=parent_post_id)
+        if not container_id:
+            return PostResult(success=False, message="reply 컨테이너 생성 실패")
+        time.sleep(2)
+        return self._publish_container(container_id)
+
     def _create_container(self, text: str, media_type: str,
-                           image_url: str = "") -> Optional[str]:
+                           image_url: str = "",
+                           reply_to_id: str = "") -> Optional[str]:
         """Step 1: 미디어 컨테이너 생성.
 
         POST /v1.0/{user_id}/threads
+        reply_to_id 가 있으면 부모 게시물에 답글로 달림.
         """
         url = f"{GRAPH_BASE}/{self.user_id}/threads"
         params: dict = {
@@ -112,6 +131,8 @@ class ThreadsPublisher(Publisher):
         }
         if media_type == "IMAGE" and image_url:
             params["image_url"] = image_url
+        if reply_to_id:
+            params["reply_to_id"] = reply_to_id
 
         try:
             resp = requests.post(url, params=params, timeout=15)

@@ -152,11 +152,15 @@ def notify_pipeline_result(pipeline: str, published: int, total: int,
     if details:
         text += f"📝 {details}\n"
     if url:
-        # 단축 실패해도 원본 URL 반환되니 그대로 사용
-        try:
-            from common.url_shortener import shorten as _shorten
-            short = _shorten(url)
-        except Exception:
+        # 100자 이내 URL 은 이미 충분히 짧아서 단축 불필요 (텔레그램에서 클릭
+        # 가능한 자동 링크 처리에도 안정적). 100자 초과 URL 만 단축 시도.
+        if len(url) > 100:
+            try:
+                from common.url_shortener import shorten as _shorten
+                short = _shorten(url) or url
+            except Exception:
+                short = url
+        else:
             short = url
         text += f"🔗 {short}\n"
     text += f"🕒 {now}"

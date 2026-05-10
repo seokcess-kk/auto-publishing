@@ -297,6 +297,250 @@ def build_riseset_document(title: str, intro: str,
     return doc
 
 
+# ─── 쿠팡 상품 리스트용 documentModel 빌더 ───────────────────────────────
+
+def build_coupang_naver_document(title: str, intro: str, products: list,
+                                  keyword: str = "",
+                                  blog_id: str = "") -> dict:
+    """쿠팡 상품 N개를 SE 에디터 카드 N개로 조립.
+
+    네이버는 외부 이미지 URL 을 image 컴포넌트로 직접 못 끼우고 별도 업로드
+    API 가 필요하다 — 이번 버전은 텍스트+가격+링크 버튼만 컴포넌트화한다.
+    어필리에이트 링크는 카드별 'COUPANG 에서 보기' 버튼에 클릭 가능 링크로 박힘.
+
+    Args:
+        title:    포스트 제목
+        intro:    AI 도입부 (없어도 됨)
+        products: [{name, price, image, affiliate_url, rating, review_count, ...}]
+        keyword:  헤더에 노출할 키워드
+    """
+    components: list[dict] = []
+
+    # 1) 제목
+    components.append({
+        "id": _se_uuid(),
+        "layout": "default",
+        "title": [_paragraph([_styled_node(title)])],
+        "subTitle": None,
+        "align": "left",
+        "@ctype": "documentTitle",
+    })
+
+    # 2) 헤더 (키워드 + 추천 안내)
+    if keyword:
+        header_nodes = [
+            _styled_node("📊 데이터 분석 기반 ", color="#666666", size="fs15"),
+            _styled_node(f"{keyword} 인기상품 TOP{len(products)}",
+                         bold=True, color="#e4000f", size="fs18"),
+            _styled_node("을 추천합니다", color="#666666", size="fs15"),
+        ]
+        components.append(_text_component([_paragraph(header_nodes, align="center")]))
+        components.append(_empty_line())
+
+    # 3) AI 도입부
+    if intro:
+        intro_paragraphs = []
+        for line in intro.split("\n"):
+            line = line.strip()
+            if line:
+                intro_paragraphs.append(
+                    _paragraph([_styled_node(line, color="#444444", size="fs15")])
+                )
+        if intro_paragraphs:
+            components.append(_text_component(intro_paragraphs))
+            components.append(_empty_line())
+
+    # 4) 상품별 카드 (테이블 1행 1셀 구조)
+    for idx, product in enumerate(products, start=1):
+        name      = product.get("name", "") or ""
+        price     = product.get("price", "") or ""
+        aff_url   = product.get("affiliate_url", "") or product.get("url", "") or ""
+        rating    = product.get("rating", "") or ""
+        review    = str(product.get("review_count", "") or "")
+        discount  = product.get("discount_rate", "") or ""
+
+        cell_paragraphs = [
+            # 순위 배지
+            _paragraph([
+                _styled_node(f"  {idx}위  ", bold=True, color="#ffffff",
+                             size="fs15", bg="#e4000f"),
+            ], align="center"),
+            _paragraph([_styled_node("")]),
+            # 상품명
+            _paragraph([_styled_node(name, bold=True, color="#222222", size="fs16")],
+                       align="center"),
+            _paragraph([_styled_node("")]),
+        ]
+
+        # 가격 줄
+        price_nodes = []
+        if discount:
+            price_nodes.append(_styled_node(f"{discount}  ",
+                                             color="#999999", size="fs13"))
+        if price:
+            price_nodes.append(_styled_node(f"￦ {price}",
+                                             bold=True, color="#e4000f", size="fs28"))
+        if price_nodes:
+            cell_paragraphs.append(_paragraph(price_nodes, align="center"))
+
+        # 평점/리뷰 줄
+        meta_nodes = []
+        if rating:
+            meta_nodes.append(_styled_node(f"⭐ {rating}", color="#ff9800", size="fs13"))
+        if review and review != "0":
+            if meta_nodes:
+                meta_nodes.append(_styled_node("   ", size="fs13"))
+            meta_nodes.append(_styled_node(f"리뷰 {review}개",
+                                            color="#888888", size="fs13"))
+        if meta_nodes:
+            cell_paragraphs.append(_paragraph(meta_nodes, align="center"))
+
+        cell_paragraphs.append(_paragraph([_styled_node("")]))
+
+        # 링크 버튼 — clickable 어필리에이트 링크
+        if aff_url:
+            cell_paragraphs.append(_paragraph([
+                _styled_node("▶ 쿠팡에서 보러가기 ◀",
+                             bold=True, color="#ffffff", size="fs15",
+                             bg="#e4000f", link_url=aff_url),
+            ], align="center"))
+        elif name:
+            cell_paragraphs.append(_paragraph([
+                _styled_node("(링크 준비 중)", color="#999999", size="fs13"),
+            ], align="center"))
+
+        cell_paragraphs.append(_paragraph([_styled_node("")]))
+
+        product_row = _table_row([_table_cell(cell_paragraphs)])
+        components.append(_table_component([product_row], col_count=1, width=60))
+        components.append(_empty_line())
+
+    # 5) 파트너스 의무 고지
+    components.append(_text_component([
+        _paragraph([_styled_node(
+            "※ 쿠팡 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            color="#999999", size="fs11")], align="center")
+    ]))
+
+    return {
+        "documentId": "",
+        "document": {
+            "version": "2.8.0",
+            "theme": "default",
+            "language": "ko-KR",
+            "id": str(uuid.uuid4()).replace("-", "").upper()[:26],
+            "components": components,
+            "di": {
+                "dif": False,
+                "dio": [
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                ],
+            },
+        },
+    }
+
+
+# ─── 뉴스픽 단일 기사용 documentModel 빌더 ───────────────────────────────
+
+def build_newspick_naver_document(title: str, article: dict,
+                                   summary: str = "",
+                                   blog_id: str = "") -> dict:
+    """뉴스픽 기사 1건을 SE 에디터 단일 카드로 조립.
+
+    article dict 의 short_url(단축 어필리에이트) 을 클릭 가능 큰 빨간 버튼
+    으로 박는다. 본문은 짧은 안내문 + 카테고리 라벨만 포함.
+    네이버는 외부 이미지 URL 을 image 컴포넌트로 직접 못 끼우므로 일단 생략.
+
+    Args:
+        title:   포스트 제목 (article["title"] 동일)
+        article: {title, url, image, short_url, category, ...}
+        summary: 선택 — AI 요약 텍스트가 있으면 본문 위에 표시
+    """
+    components: list[dict] = []
+    short_url = article.get("short_url", "") or article.get("url", "")
+    category  = article.get("category", "") or ""
+
+    # 1) 제목
+    components.append({
+        "id": _se_uuid(),
+        "layout": "default",
+        "title": [_paragraph([_styled_node(title)])],
+        "subTitle": None,
+        "align": "left",
+        "@ctype": "documentTitle",
+    })
+
+    # 2) 카테고리 라벨
+    if category:
+        components.append(_text_component([_paragraph([
+            _styled_node(f"  📰 {category}  ", bold=True, color="#ffffff",
+                         size="fs13", bg="#03C75A"),
+        ], align="center")]))
+        components.append(_empty_line())
+
+    # 3) AI 요약 또는 안내문
+    if summary:
+        for line in summary.split("\n"):
+            line = line.strip()
+            if line:
+                components.append(_text_component([
+                    _paragraph([_styled_node(line, color="#444444", size="fs15")])
+                ]))
+        components.append(_empty_line())
+    else:
+        # 요약 없으면 정적 안내문
+        components.append(_text_component([_paragraph([
+            _styled_node("아래 링크에서 기사 전문을 확인해 보세요.",
+                         color="#666666", size="fs15"),
+        ], align="center")]))
+        components.append(_empty_line())
+
+    # 4) 큰 클릭 가능 링크 버튼 (테이블 셀 안에)
+    if short_url:
+        button_paragraphs = [
+            _paragraph([_styled_node("")]),
+            _paragraph([
+                _styled_node("📰  기사 전문 보러가기  →",
+                             bold=True, color="#ffffff", size="fs18",
+                             bg="#03C75A", link_url=short_url),
+            ], align="center"),
+            _paragraph([_styled_node("")]),
+            _paragraph([_styled_node(
+                "(링크 클릭 시 원본 기사로 이동합니다)",
+                color="#888888", size="fs11")], align="center"),
+            _paragraph([_styled_node("")]),
+        ]
+        button_row = _table_row([_table_cell(button_paragraphs)])
+        components.append(_table_component([button_row], col_count=1, width=70))
+        components.append(_empty_line())
+
+    # 5) 푸터 — 출처 표기
+    components.append(_text_component([
+        _paragraph([_styled_node(
+            "※ 본 게시글은 뉴스픽 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            color="#999999", size="fs11")], align="center")
+    ]))
+
+    return {
+        "documentId": "",
+        "document": {
+            "version": "2.8.0",
+            "theme": "default",
+            "language": "ko-KR",
+            "id": str(uuid.uuid4()).replace("-", "").upper()[:26],
+            "components": components,
+            "di": {
+                "dif": False,
+                "dio": [
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                ],
+            },
+        },
+    }
+
+
 # ─── Publisher 클래스 ──────────────────────────────────────────────────────
 
 class NaverBlogPublisher(Publisher):
@@ -342,11 +586,25 @@ class NaverBlogPublisher(Publisher):
         product = kwargs.get("product")
         intro = kwargs.get("intro", "")
         comment_url = kwargs.get("comment_url", "")
+        coupang_products = kwargs.get("coupang_products")
+        keyword = kwargs.get("keyword", "")
 
         if riseset_data:
             doc = build_riseset_document(
                 title, intro, riseset_data, product, self.blog_id,
                 comment_url=comment_url)
+            return json.dumps(doc, ensure_ascii=False)
+
+        if coupang_products:
+            doc = build_coupang_naver_document(
+                title, intro, coupang_products,
+                keyword=keyword, blog_id=self.blog_id)
+            return json.dumps(doc, ensure_ascii=False)
+
+        newspick_article = kwargs.get("newspick_article")
+        if newspick_article:
+            doc = build_newspick_naver_document(
+                title, newspick_article, summary=intro, blog_id=self.blog_id)
             return json.dumps(doc, ensure_ascii=False)
 
         # 기본: 단순 텍스트 모드

@@ -79,7 +79,8 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
         notify_pipeline_result(cfg.name, 0, count, details="뉴스픽 세션 없음")
         return
 
-    articles = newspick.fetch_with_links(category=category, count=count)
+    # fetch 가 추천+일반 두 소스에서 가져오므로 최대 2*count 반환 → 명시적 절단
+    articles = newspick.fetch_with_links(category=category, count=count)[:count]
     if not articles:
         log("수집된 아티클 없음", "warn")
         notify_pipeline_result(cfg.name, 0, count, details="수집 실패")
@@ -163,10 +164,18 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             if product:
                 content += render_product_card(product)
 
+            # AI 관련 태그 3개 + 정적 태그 2개 = 총 5개
+            from common.ai_intro import generate_related_tags
+            ai_tags = generate_related_tags(
+                title, context=f"{category} 카테고리", n=3,
+                exclude=[category, "뉴스픽"],
+            )
+            tags = [category, "뉴스픽"] + ai_tags
+
             result = publisher.post(
                 title=title,
                 content=content,
-                tags=[category, "뉴스픽"],
+                tags=tags,
                 image_url=article.get("image", ""),
                 category=post_category,
             )

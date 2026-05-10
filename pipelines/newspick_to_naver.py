@@ -52,21 +52,45 @@ def run_blog(category: str = "추천", count: int = 1) -> None:
         log("뉴스픽 세션 없음", "error")
         return
 
-    articles  = newspick.fetch_with_links(category=category, count=count)
+    from common.ai_intro import generate_newspick_hook, generate_related_tags
+
+    # fetch 는 추천(recomList) + 일반(contentList) 두 소스에서 각각 pageSize
+    # 만큼 받아오므로 최대 2*count 건 반환 가능. POST_COUNT 약속을 지키려면
+    # 여기서 명시적으로 잘라야 한다.
+    articles  = newspick.fetch_with_links(category=category, count=count)[:count]
     published = 0
     last_url = ""
     for article in articles:
         title   = article["title"]
+        # 폴백 텍스트 — 만약 SE 분기를 안 타도 최소한 링크 텍스트는 남도록
         content = f'<p><a href="{article["short_url"]}">{title}</a></p>'
-        if article.get("summary"):
-            content += f"\n<p>{gemini.summarize(article['summary'])}</p>"
 
+        # 본문 위에 들어갈 후킹 멘트 — title 만 있으면 AI 로 생성, summary
+        # 가 있으면 그걸 우선 사용 (provider 가 추후 summary 채워줄 수도)
+        if article.get("summary"):
+            intro_text = gemini.summarize(article["summary"])
+        else:
+            intro_text = generate_newspick_hook(title, category=category)
+        if intro_text:
+            content += f"\n<p>{intro_text}</p>"
+
+        # AI 관련 태그 3개 + 정적 태그 2개 = 총 5개
+        ai_tags = generate_related_tags(
+            title, context=f"{category} 카테고리", n=3,
+            exclude=[category, "뉴스픽"],
+        )
+        tags = [category, "뉴스픽"] + ai_tags
+
+        # newspick_article kwarg 가 있으면 publisher 가 SE 에디터 카드 (큰
+        # 클릭 가능 링크 버튼 포함) 분기로 처리한다.
         result = blog.post(
             title=title,
             content=content,
-            tags=[category, "뉴스픽"],
+            tags=tags,
             image_url=article.get("image", ""),
             category_no=cat_no,
+            newspick_article=article,
+            intro=intro_text,
         )
         if result.success:
             published += 1
@@ -102,7 +126,10 @@ def run_cafe(category: str = "추천", count: int = 1) -> None:
         log("뉴스픽 세션 없음", "error")
         return
 
-    articles  = newspick.fetch_with_links(category=category, count=count)
+    from common.ai_intro import generate_related_tags
+
+    # fetch 가 추천+일반 두 소스에서 가져오므로 최대 2*count 반환 → 명시적 절단
+    articles  = newspick.fetch_with_links(category=category, count=count)[:count]
     published = 0
     last_url = ""
     for article in articles:
@@ -111,10 +138,16 @@ def run_cafe(category: str = "추천", count: int = 1) -> None:
         if article.get("summary"):
             content += f"\n<p>{gemini.summarize(article['summary'])}</p>"
 
+        ai_tags = generate_related_tags(
+            title, context=f"{category} 카테고리", n=4,
+            exclude=[category],
+        )
+        tags = [category] + ai_tags  # 카테고리 1 + AI 4 = 5
+
         result = cafe.post(
             title=title,
             content=content,
-            tags=[category],
+            tags=tags,
             image_url=article.get("image", ""),
             menu_id=menu_id,
         )

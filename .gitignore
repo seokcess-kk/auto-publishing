@@ -28,6 +28,7 @@ daechanlife81.github.io/
 
 # 로그
 *.log
+*.err
 scheduler.log
 
 # IDE

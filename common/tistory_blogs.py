@@ -12,6 +12,7 @@
     reserved    → 예약 슬롯
     backlink    → 백링크 소스
     aliexpress  → 알리익스프레스 상품글
+    coupang     → 쿠팡 파트너스 상품글
 
 각 역할은 .env 에서 TISTORY_BLOG_<ROLE> 로 지정한다.
 미지정 시 TISTORY_BLOG_NAME 으로 폴백한다 (단일 블로그 운영 시 유용).
@@ -29,6 +30,7 @@ SUPPORTED_ROLES = (
     "reserved",
     "backlink",
     "aliexpress",
+    "coupang",
 )
 
 

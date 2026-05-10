@@ -63,7 +63,8 @@ def run(category: str = "추천", count: int = 1,
         log("뉴스픽 세션 없음", "error")
         return
 
-    articles  = newspick.fetch_with_links(category=category, count=count)
+    # fetch 가 추천+일반 두 소스에서 가져오므로 최대 2*count 반환 → 명시적 절단
+    articles  = newspick.fetch_with_links(category=category, count=count)[:count]
     published = {k: 0 for k in publishers}
 
     for article in articles:

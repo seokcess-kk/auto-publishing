@@ -26,6 +26,20 @@ def shorten(url: str, timeout: int = 5) -> str:
     return url
 
 
+def _is_valid_short_url(text: str) -> bool:
+    """단축 서비스가 'Error: ...' 같은 에러 메시지를 200 으로 반환하는 경우 거름."""
+    if not text:
+        return False
+    if text.lower().startswith("error"):
+        return False
+    if not (text.startswith("http://") or text.startswith("https://")):
+        return False
+    if len(text) > 200:
+        # 단축 URL 이 200자 이상이면 비정상 (HTML 페이지 등)
+        return False
+    return True
+
+
 def _isgd(url: str, timeout: int) -> str:
     resp = requests.get(
         "https://is.gd/create.php",
@@ -33,7 +47,8 @@ def _isgd(url: str, timeout: int) -> str:
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.text.strip()
+    candidate = resp.text.strip()
+    return candidate if _is_valid_short_url(candidate) else ""
 
 
 def _tinyurl(url: str, timeout: int) -> str:
@@ -43,7 +58,8 @@ def _tinyurl(url: str, timeout: int) -> str:
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.text.strip()
+    candidate = resp.text.strip()
+    return candidate if _is_valid_short_url(candidate) else ""
 
 
 def _clckru(url: str, timeout: int) -> str:
@@ -53,4 +69,5 @@ def _clckru(url: str, timeout: int) -> str:
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.text.strip()
+    candidate = resp.text.strip()
+    return candidate if _is_valid_short_url(candidate) else ""
