@@ -195,7 +195,11 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         if result.url:
             try:
                 from common.publish_queue import add_url as _add_url
-                _add_url(result.url, platform="threads", title=kw)
+                _add_url(
+                    result.url, platform="threads", title=kw,
+                    keyword=kw, source="coupang",
+                    affiliate_url=short_link or aff_url,
+                )
             except Exception:
                 pass
 

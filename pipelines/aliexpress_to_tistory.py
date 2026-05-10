@@ -116,7 +116,12 @@ def run(count_per_keyword: int = 10) -> None:
                 if result.url:
                     last_url = result.url
                     from common.publish_queue import add_url as _add_url
-                    _add_url(result.url, platform="tistory", title=title)
+                    _add_url(
+                        result.url, platform="tistory", title=title,
+                        keyword=keyword, source="aliexpress",
+                        affiliate_url=(products[0].get("affiliate_url", "") or
+                                        products[0].get("url", "")),
+                    )
             else:
                 log(f"발행 실패: {result.message}", "error")
 

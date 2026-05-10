@@ -76,6 +76,7 @@ _CFG = ProductWpConfig(
     product_count_default=10,
     source_search_kwargs={},
     close_source=False,
+    source_kind="coupang",
 )
 
 

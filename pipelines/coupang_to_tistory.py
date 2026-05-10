@@ -142,7 +142,12 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
                     log(f"발행 완료: {result.url}", "ok")
                     try:
                         from common.publish_queue import add_url as _add_url
-                        _add_url(result.url, platform="tistory", title=title)
+                        _add_url(
+                            result.url, platform="tistory", title=title,
+                            keyword=kw, source="coupang",
+                            affiliate_url=(products[0].get("affiliate_url", "") or
+                                            products[0].get("url", "")),
+                        )
                     except Exception:
                         pass
             else:

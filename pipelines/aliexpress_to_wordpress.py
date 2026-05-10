@@ -66,6 +66,7 @@ _CFG = ProductWpConfig(
     source_search_kwargs={"require_affiliate": True},
     close_source=True,
     log_prefix="[알리→WP] ",
+    source_kind="aliexpress",
 )
 
 

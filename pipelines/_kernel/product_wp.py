@@ -31,6 +31,7 @@ class ProductWpConfig:
     source_search_kwargs: dict = field(default_factory=dict)
     close_source: bool = False                 # source.close() 호출 여부
     log_prefix: str = ""                       # 로그 prefix (예: "[알리→WP]")
+    source_kind: str = ""                      # publish_queue 메타용 — "coupang" | "aliexpress"
 
 
 def _build_content(keyword: str, products: list, theme: ProductTheme) -> tuple:
@@ -108,7 +109,12 @@ def run(cfg: ProductWpConfig, profile_name: str = None,
                 if result.url:
                     last_url = result.url
                     from common.publish_queue import add_url as _add_url
-                    _add_url(result.url, platform="wordpress", title=title)
+                    _add_url(
+                        result.url, platform="wordpress", title=title,
+                        keyword=keyword, source=cfg.source_kind,
+                        affiliate_url=(products[0].get("affiliate_url", "") or
+                                        products[0].get("url", "")),
+                    )
 
             time.sleep(random.uniform(10, 20))
     finally:

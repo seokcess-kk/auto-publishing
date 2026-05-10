@@ -56,8 +56,18 @@ def _save(data: list, path: str) -> None:
 
 
 def add_url(url: str, platform: str, title: str = "",
+            keyword: str = "", source: str = "", affiliate_url: str = "",
             queue_path: str = DEFAULT_QUEUE_PATH) -> bool:
-    """발행 성공 URL을 큐에 추가. 중복·비절대 URL 거부. 추가 여부 반환."""
+    """발행 성공 URL을 큐에 추가. 중복·비절대 URL 거부. 추가 여부 반환.
+
+    Args:
+        keyword:        발행 키워드 (ROI 집계 매칭 키)
+        source:         상품/콘텐츠 소스 — "coupang", "aliexpress", "newspick" 등
+        affiliate_url:  어필리에이트 단축 링크 (쿠팡 파트너스 stats 매칭용)
+
+    keyword/source/affiliate_url 은 모두 옵션 — 기존 호출처는 그대로 동작하고,
+    수익 분석이 필요한 채널만 채워서 ROI 피드백 루프에 진입.
+    """
     url = url.strip()
     if not url:
         return False
@@ -79,6 +89,9 @@ def add_url(url: str, platform: str, title: str = "",
         "url": url,
         "title": title,
         "platform": platform,
+        "keyword": keyword,
+        "source": source,
+        "affiliate_url": affiliate_url,
         "google_indexed": "X",
         "naver_indexed": "X",
         "backlinked": "X",
