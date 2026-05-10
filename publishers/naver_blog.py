@@ -872,7 +872,10 @@ class NaverBlogPublisher(Publisher):
                             log_no = m.group(1)
 
                 if log_no:
-                    post_url = f"https://blog.naver.com/{self.blog_id}/{log_no}"
+                    # m.blog.naver.com 으로 반환 — PC 도메인은 모바일 UA 에서 188B redirect
+                    # script 만 내려와 인앱 브라우저(텔레그램/카카오톡/JS 미실행 환경)에서
+                    # raw HTML 코드로 노출된다. m. 도메인은 PC 에서도 정상 렌더링.
+                    post_url = f"https://m.blog.naver.com/{self.blog_id}/{log_no}"
                     log(f"네이버 블로그 발행 성공: {post_url}", "ok")
                     return PostResult(success=True, url=post_url, post_id=log_no)
 
