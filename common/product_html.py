@@ -75,8 +75,43 @@ def _build_card(idx: int, product: dict, theme: ProductTheme) -> str:
     )
 
 
+def _build_top_cta_html(top_product: dict, theme: ProductTheme) -> str:
+    """인트로 직후 above-the-fold CTA 박스 — 첫 화면에서 바로 클릭 가능하도록.
+
+    1위 상품의 어필리에이트 링크를 강조한 한 줄 + 버튼 형태.
+    """
+    aff = top_product.get("affiliate_url", "") or top_product.get("url", "") or ""
+    name = (top_product.get("name", "") or "")[:50]
+    if not aff or not name:
+        return ""
+    return (
+        f'<div style="text-align:center;margin:0 auto 22px auto;max-width:680px;'
+        f'padding:14px 16px;background:#fff8f8;border:1px solid {theme.accent_color}33;'
+        f'border-radius:12px;">'
+        f'<div style="font-size:14px;color:#333;margin-bottom:10px;line-height:1.5;">'
+        f'<span style="color:{theme.accent_color};font-weight:700;">🔥 지금 1위</span> '
+        f'<span style="color:#222;">{name}</span></div>'
+        f'<a href="{aff}" target="_blank" rel="nofollow sponsored" '
+        f'style="display:inline-block;padding:10px 22px;background:{theme.accent_color};'
+        f'color:#fff;font-weight:700;font-size:14px;text-decoration:none;border-radius:8px;">'
+        f'바로가기 ▶</a></div>'
+    )
+
+
+def _build_pick_reason_html(text: str) -> str:
+    """카드 직전에 들어갈 한 줄 후킹/픽 이유 — 본문 spread 와 클릭 유도."""
+    if not text:
+        return ""
+    return (
+        f'<div style="text-align:center;margin:6px auto 8px auto;max-width:680px;'
+        f'padding:0 12px;font-size:14px;line-height:1.6;color:#444;">'
+        f'{text}</div>'
+    )
+
+
 def render_product_post(keyword: str, products: list, theme: ProductTheme,
-                        intro_text: str = "") -> tuple:
+                        intro_text: str = "",
+                        pick_reasons: list = None) -> tuple:
     """(title, content_html, excerpt, slug) 반환. content 는 wp:html 블록으로 감쌈."""
     if not products:
         return "", "", "", ""
@@ -86,15 +121,23 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
 
     excerpt = theme.excerpt_template.format(keyword=keyword, count=len(products))
 
-    cards_html = "".join(_build_card(i, p, theme) for i, p in enumerate(products))
+    # 카드 직전 픽 이유 한 줄 + 카드 — interleave
+    card_blocks = []
+    for i, p in enumerate(products):
+        pr = (pick_reasons[i] if pick_reasons and i < len(pick_reasons) else "").strip()
+        card_blocks.append(_build_pick_reason_html(pr))
+        card_blocks.append(_build_card(i, p, theme))
+    cards_html = "".join(card_blocks)
 
     intro_html = ""
     if intro_text:
         intro_html = (
-            f'<div style="padding:16px 20px;margin:0 auto 20px auto;max-width:680px;'
+            f'<div style="padding:16px 20px;margin:0 auto 16px auto;max-width:680px;'
             f'background:#f8f9fa;border-radius:10px;font-size:14px;line-height:1.8;color:#444;">'
             f'{intro_text}</div>'
         )
+
+    top_cta_html = _build_top_cta_html(products[0], theme)
 
     inner_html = (
         f'<div style="max-width:680px;margin:0 auto;padding:20px 16px;'
@@ -105,6 +148,7 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
         f'{keyword} 인기상품 TOP{len(products)}</span>'
         f'을 추천합니다</div>'
         f'{intro_html}'
+        f'{top_cta_html}'
         f'{cards_html}'
         f'<div style="text-align:center;padding:16px 0 8px;font-size:11px;color:#bbb;">'
         f'{theme.footer_note}</div>'

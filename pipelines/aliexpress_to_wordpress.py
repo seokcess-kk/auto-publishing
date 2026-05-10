@@ -21,7 +21,10 @@ from pipelines._kernel.product_wp import run_all as _kernel_run_all
 from sources.aliexpress import AliexpressSource
 
 # aliexpress_to_tistory 가 build_content 를 import 하므로 유지
-from common.ai_intro import generate_product_intro as generate_intro
+from common.ai_intro import (
+    generate_product_intro as generate_intro,
+    generate_product_pick_reasons,
+)
 
 
 # ─── 스케줄러 메타 ───────────────────────────────────────────────────────────
@@ -38,8 +41,11 @@ def build_content(keyword: str, products: list) -> tuple:
     """알리 (title, content, excerpt, slug). 공통 템플릿 엔진 사용."""
     if not products:
         return "", "", "", ""
-    intro_text = generate_intro(keyword, products)
-    return render_product_post(keyword, products, ALIEXPRESS_THEME, intro_text=intro_text)
+    intro_text   = generate_intro(keyword, products)
+    pick_reasons = generate_product_pick_reasons(keyword, products)
+    return render_product_post(keyword, products, ALIEXPRESS_THEME,
+                                intro_text=intro_text,
+                                pick_reasons=pick_reasons)
 
 
 # ─── 파이프라인 Config ──────────────────────────────────────────────────────

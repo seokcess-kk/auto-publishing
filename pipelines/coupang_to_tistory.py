@@ -22,7 +22,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from common.ai_intro import generate_product_intro
+from common.ai_intro import generate_product_intro, generate_product_pick_reasons
 from common.logger import log
 from common.product_html import COUPANG_THEME, render_product_post
 from common.tistory_blogs import resolve_blog_name
@@ -39,11 +39,14 @@ SCHEDULE = {
 
 
 def _build_content(keyword: str, products: list) -> tuple:
-    """(title, content, excerpt, slug) — COUPANG_THEME + AI 도입부."""
+    """(title, content, excerpt, slug) — COUPANG_THEME + AI 도입부 + 카드 픽 이유."""
     if not products:
         return "", "", "", ""
-    intro_text = generate_product_intro(keyword, products)
-    return render_product_post(keyword, products, COUPANG_THEME, intro_text=intro_text)
+    intro_text   = generate_product_intro(keyword, products)
+    pick_reasons = generate_product_pick_reasons(keyword, products)
+    return render_product_post(keyword, products, COUPANG_THEME,
+                                intro_text=intro_text,
+                                pick_reasons=pick_reasons)
 
 
 def _close_pub(pub) -> None:

@@ -28,7 +28,11 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from common.ai_intro import generate_product_intro, generate_related_tags
+from common.ai_intro import (
+    generate_product_intro,
+    generate_product_pick_reasons,
+    generate_related_tags,
+)
 from common.logger import log
 from common.product_html import ALIEXPRESS_THEME, render_product_post
 from publishers.naver_blog import NaverBlogPublisher
@@ -44,17 +48,19 @@ SCHEDULE = {
 
 
 def _build_content(keyword: str, products: list) -> tuple:
-    """(title, content, excerpt, slug, intro_text) — ALIEXPRESS_THEME + AI 도입부.
+    """(title, content, excerpt, slug, intro_text, pick_reasons) — ALIEXPRESS_THEME + AI.
 
     네이버 블로그 publisher 는 'content' 인자의 HTML 을 strip 하므로 실제
-    본문은 'aliexpress_products' kwargs 로 따로 전달한다.
+    본문은 'aliexpress_products' / 'pick_reasons' kwargs 로 따로 전달한다.
     """
     if not products:
-        return "", "", "", "", ""
-    intro_text = generate_product_intro(keyword, products)
+        return "", "", "", "", "", []
+    intro_text   = generate_product_intro(keyword, products)
+    pick_reasons = generate_product_pick_reasons(keyword, products)
     title, content, excerpt, slug = render_product_post(
-        keyword, products, ALIEXPRESS_THEME, intro_text=intro_text)
-    return title, content, excerpt, slug, intro_text
+        keyword, products, ALIEXPRESS_THEME,
+        intro_text=intro_text, pick_reasons=pick_reasons)
+    return title, content, excerpt, slug, intro_text, pick_reasons
 
 
 def _resolve_category_no() -> int:
@@ -137,7 +143,7 @@ def run(count_per_keyword: "int | None" = None,
     last_url = ""
 
     for kw, products in collected:
-        title, content, _excerpt, _slug, intro_text = _build_content(kw, products)
+        title, content, _excerpt, _slug, intro_text, pick_reasons = _build_content(kw, products)
         image_url = products[0].get("image", "")
         ai_tags = generate_related_tags(
             title, context=f"알리익스프레스 상품 / 키워드 {kw}", n=3,
@@ -154,6 +160,7 @@ def run(count_per_keyword: "int | None" = None,
             aliexpress_products=products,
             intro=intro_text,
             keyword=kw,
+            pick_reasons=pick_reasons,
         )
         if result.success:
             published += 1

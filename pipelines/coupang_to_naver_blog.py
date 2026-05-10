@@ -24,7 +24,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from common.ai_intro import generate_product_intro
+from common.ai_intro import generate_product_intro, generate_product_pick_reasons
 from common.logger import log
 from common.product_html import COUPANG_THEME, render_product_post
 from publishers.naver_blog import NaverBlogPublisher
@@ -40,18 +40,20 @@ SCHEDULE = {
 
 
 def _build_content(keyword: str, products: list) -> tuple:
-    """(title, content, excerpt, slug, intro_text) — COUPANG_THEME + AI 도입부.
+    """(title, content, excerpt, slug, intro_text, pick_reasons) — COUPANG_THEME + AI.
 
     네이버 블로그 publisher 는 'content' 인자의 HTML 을 strip 해버리므로
-    실제 본문은 publisher 에 'coupang_products' kwargs 로 따로 전달한다.
-    'content' 는 폴백 텍스트로만 의미가 있다.
+    실제 본문은 publisher 에 'coupang_products' / 'pick_reasons' kwargs 로
+    따로 전달한다. 'content' 는 폴백 텍스트로만 의미가 있다.
     """
     if not products:
-        return "", "", "", "", ""
-    intro_text = generate_product_intro(keyword, products)
+        return "", "", "", "", "", []
+    intro_text   = generate_product_intro(keyword, products)
+    pick_reasons = generate_product_pick_reasons(keyword, products)
     title, content, excerpt, slug = render_product_post(
-        keyword, products, COUPANG_THEME, intro_text=intro_text)
-    return title, content, excerpt, slug, intro_text
+        keyword, products, COUPANG_THEME,
+        intro_text=intro_text, pick_reasons=pick_reasons)
+    return title, content, excerpt, slug, intro_text, pick_reasons
 
 
 def _resolve_category_no() -> int:
@@ -138,7 +140,7 @@ def run(count_per_keyword: "int | None" = None,
     from common.ai_intro import generate_related_tags
 
     for kw, products in collected:
-        title, content, _excerpt, _slug, intro_text = _build_content(kw, products)
+        title, content, _excerpt, _slug, intro_text, pick_reasons = _build_content(kw, products)
         image_url = products[0].get("image", "")
         # AI 관련 태그 3개 + 정적 태그 2개 + 키워드 = 총 6개
         ai_tags = generate_related_tags(
@@ -158,6 +160,7 @@ def run(count_per_keyword: "int | None" = None,
             coupang_products=products,
             intro=intro_text,
             keyword=kw,
+            pick_reasons=pick_reasons,
         )
         if result.success:
             published += 1

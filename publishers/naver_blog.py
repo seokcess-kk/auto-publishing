@@ -301,7 +301,8 @@ def build_riseset_document(title: str, intro: str,
 
 def build_coupang_naver_document(title: str, intro: str, products: list,
                                   keyword: str = "",
-                                  blog_id: str = "") -> dict:
+                                  blog_id: str = "",
+                                  pick_reasons: list = None) -> dict:
     """쿠팡 상품 N개를 SE 에디터 카드 N개로 조립.
 
     네이버는 외부 이미지 URL 을 image 컴포넌트로 직접 못 끼우고 별도 업로드
@@ -313,6 +314,7 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
         intro:    AI 도입부 (없어도 됨)
         products: [{name, price, image, affiliate_url, rating, review_count, ...}]
         keyword:  헤더에 노출할 키워드
+        pick_reasons: 카드 직전에 들어갈 한 줄 후킹 (len == len(products))
     """
     components: list[dict] = []
 
@@ -350,6 +352,25 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
             components.append(_text_component(intro_paragraphs))
             components.append(_empty_line())
 
+    # 3.5) 인트로 직후 above-the-fold CTA — 첫 화면에서 바로 클릭 가능하도록
+    if products:
+        top1 = products[0]
+        top_aff = top1.get("affiliate_url", "") or top1.get("url", "") or ""
+        top_name = (top1.get("name", "") or "")[:50]
+        if top_aff and top_name:
+            components.append(_text_component([
+                _paragraph([
+                    _styled_node("🔥 지금 1위 ", bold=True, color="#e4000f", size="fs15"),
+                    _styled_node(top_name, color="#222222", size="fs15"),
+                ], align="center"),
+                _paragraph([_styled_node("")]),
+                _paragraph([
+                    _styled_node("  바로가기 ▶  ", bold=True, color="#ffffff",
+                                 size="fs16", bg="#e4000f", link_url=top_aff),
+                ], align="center"),
+            ]))
+            components.append(_empty_line())
+
     # 4) 상품별 카드 (테이블 1행 1셀 구조)
     for idx, product in enumerate(products, start=1):
         name      = product.get("name", "") or ""
@@ -358,6 +379,14 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
         rating    = product.get("rating", "") or ""
         review    = str(product.get("review_count", "") or "")
         discount  = product.get("discount_rate", "") or ""
+
+        # 카드 직전 — 한 줄 픽 이유 (있으면)
+        pr = (pick_reasons[idx - 1] if pick_reasons and idx - 1 < len(pick_reasons) else "").strip()
+        if pr:
+            components.append(_text_component([
+                _paragraph([_styled_node(pr, color="#333333", size="fs15")],
+                           align="center")
+            ]))
 
         cell_paragraphs = [
             # 순위 배지
@@ -445,7 +474,8 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
 
 def build_aliexpress_naver_document(title: str, intro: str, products: list,
                                      keyword: str = "",
-                                     blog_id: str = "") -> dict:
+                                     blog_id: str = "",
+                                     pick_reasons: list = None) -> dict:
     """알리익스프레스 상품 N개를 SE 에디터 카드 N개로 조립.
 
     build_coupang_naver_document 와 구조 동일하되 라벨/색상/의무 고지가
@@ -453,7 +483,8 @@ def build_aliexpress_naver_document(title: str, intro: str, products: list,
     kwargs 에서 호출된다.
 
     Args:
-        products: [{name, price, image, affiliate_url, rating, sales_num, ...}]
+        products:     [{name, price, image, affiliate_url, rating, sales_num, ...}]
+        pick_reasons: 카드 직전에 들어갈 한 줄 후킹 (len == len(products))
     """
     components: list[dict] = []
 
@@ -488,12 +519,39 @@ def build_aliexpress_naver_document(title: str, intro: str, products: list,
             components.append(_text_component(intro_paragraphs))
             components.append(_empty_line())
 
+    # 인트로 직후 above-the-fold CTA — 첫 화면에서 바로 클릭 가능하도록
+    if products:
+        top1 = products[0]
+        top_aff = top1.get("affiliate_url", "") or top1.get("url", "") or ""
+        top_name = (top1.get("name", "") or "")[:50]
+        if top_aff and top_name:
+            components.append(_text_component([
+                _paragraph([
+                    _styled_node("🔥 지금 1위 ", bold=True, color="#ff4747", size="fs15"),
+                    _styled_node(top_name, color="#222222", size="fs15"),
+                ], align="center"),
+                _paragraph([_styled_node("")]),
+                _paragraph([
+                    _styled_node("  바로가기 ▶  ", bold=True, color="#ffffff",
+                                 size="fs16", bg="#ff4747", link_url=top_aff),
+                ], align="center"),
+            ]))
+            components.append(_empty_line())
+
     for idx, product in enumerate(products, start=1):
         name      = product.get("name", "") or ""
         price     = product.get("price", "") or ""
         aff_url   = product.get("affiliate_url", "") or product.get("url", "") or ""
         rating    = product.get("rating", "") or ""
         sales     = str(product.get("sales_num", "") or "")
+
+        # 카드 직전 — 한 줄 픽 이유 (있으면)
+        pr = (pick_reasons[idx - 1] if pick_reasons and idx - 1 < len(pick_reasons) else "").strip()
+        if pr:
+            components.append(_text_component([
+                _paragraph([_styled_node(pr, color="#333333", size="fs15")],
+                           align="center")
+            ]))
 
         cell_paragraphs = [
             _paragraph([
@@ -712,6 +770,7 @@ class NaverBlogPublisher(Publisher):
         comment_url = kwargs.get("comment_url", "")
         coupang_products = kwargs.get("coupang_products")
         keyword = kwargs.get("keyword", "")
+        pick_reasons = kwargs.get("pick_reasons")
 
         if riseset_data:
             doc = build_riseset_document(
@@ -722,14 +781,16 @@ class NaverBlogPublisher(Publisher):
         if coupang_products:
             doc = build_coupang_naver_document(
                 title, intro, coupang_products,
-                keyword=keyword, blog_id=self.blog_id)
+                keyword=keyword, blog_id=self.blog_id,
+                pick_reasons=pick_reasons)
             return json.dumps(doc, ensure_ascii=False)
 
         aliexpress_products = kwargs.get("aliexpress_products")
         if aliexpress_products:
             doc = build_aliexpress_naver_document(
                 title, intro, aliexpress_products,
-                keyword=keyword, blog_id=self.blog_id)
+                keyword=keyword, blog_id=self.blog_id,
+                pick_reasons=pick_reasons)
             return json.dumps(doc, ensure_ascii=False)
 
         newspick_article = kwargs.get("newspick_article")

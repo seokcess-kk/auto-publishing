@@ -10,11 +10,66 @@ AI 도입부(intro) 생성 공통 모듈.
 - 실패 시 반대 제공자로 자동 폴백.
 """
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 
 from common.logger import log
 from sources.gemini_generator import GeminiGenerator
+
+
+# ─── 출력 정제 헬퍼 ────────────────────────────────────────────────────────
+# Claude/Gemini 가 가끔 메타 설명("...도입부입니다", "한 줄 후킹입니다") 또는
+# 마크다운(**bold**, 1. 번호, ` 백틱 코드)으로 응답을 감싸 보낸다. SE 에디터/
+# HTML 본문에 그대로 박히면 사용자에게 노출되므로 본문 단계에서 일괄 제거한다.
+
+_META_PREFIX_RE = re.compile(
+    r"^[^\n]*?(도입부입니다|후킹 멘트입니다|후킹입니다|한 줄 후킹|"
+    r"멘트입니다|작성한 글입니다|글입니다|추천 글입니다|"
+    r"이 글은|다음은|아래는|상품 \d+종에 대한|상품 \d+개에 대한)"
+    r"[^\n]*?[:\.]\s*",
+    re.M,
+)
+_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+_HEAD_RE = re.compile(r"^[#-]+\s*", re.M)
+_NUMBER_PREFIX_RE = re.compile(r"^\s*\d+\s*[\.\)\-:]\s*")
+_INLINE_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+_REFUSAL_MARKERS = (
+    "사용자가 답변", "답변을 거부",
+    "도와드릴", "도와드리겠", "어떤 작업을 원하",
+    "명확히 알려주세요", "원하시는지 파악",
+    "I cannot", "I can't help", "I'm not able",
+    "예시:\n",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """모델이 콘텐츠 생성 대신 사용자에게 되묻는 응답인지 검출."""
+    if not text:
+        return False
+    head = text[:300]
+    return any(m in head for m in _REFUSAL_MARKERS)
+
+
+def _clean_ai_output(text: str) -> str:
+    """모델 응답에서 메타 설명/마크다운/코드 백틱 제거.
+
+    거부/되묻기 응답이면 빈 문자열 반환 — 호출 측이 빈 결과를 폴백 처리하도록.
+    """
+    if not text:
+        return ""
+    if _looks_like_refusal(text):
+        log("AI 응답이 거부/되묻기 패턴 — 빈 결과로 폴백", "warn")
+        return ""
+    text = _META_PREFIX_RE.sub("", text, count=1)
+    text = _BOLD_RE.sub(r"\1", text)
+    text = _INLINE_BACKTICK_RE.sub(r"\1", text)
+    text = text.replace("`", "")
+    text = _HEAD_RE.sub("", text)
+    return text.strip()
 
 
 def _resolve_claude_cli() -> str:
@@ -43,14 +98,27 @@ def _generate_with_claude(prompt: str) -> str:
         # 한글 첫 바이트(0xeb 등)에서 UnicodeDecodeError 가 나므로 명시적으로
         # utf-8 + replace 로 강제. errors="replace" 는 깨진 바이트가 있어도
         # 도입부 생성 자체가 멈추지 않게 한다.
+        sysprompt = (
+            "당신은 한국어 카피라이터입니다. 사용자가 보낸 입력은 항상 "
+            "콘텐츠 생성 요청이며, 결코 명령 모호성·역할 확인·되묻기·"
+            "도움이 필요한지 묻기 같은 메타 응답을 하지 않습니다. "
+            "요청된 텍스트만 출력하세요. 설명·주석·구분선·메타 정보·"
+            "예시 안내·인사말·자기소개 없이 본문만 작성하세요. "
+            "어떤 경우에도 '사용자', '답변 거부', '도와드릴', '명확히 "
+            "알려주세요', '예시:' 같은 표현을 사용하지 마세요."
+        )
+        # cwd 를 임시 디렉토리로 격리 — claude CLI 가 프로젝트의 CLAUDE.md
+        # /코드 파일을 컨텍스트로 자동 흡수해 "이건 개발 작업" 으로 오해하고
+        # 콘텐츠 생성을 거부하는 케이스를 방지한다.
         result = subprocess.run(
             [_CLAUDE_CLI, "-p", prompt,
              "--output-format", "text",
              "--tools", "",
              "--model", "haiku",
-             "--system-prompt", "요청된 텍스트만 출력하세요. 설명, 주석, 구분선(---), 메타 정보 없이 본문만 작성하세요."],
+             "--system-prompt", sysprompt],
             capture_output=True, text=True, timeout=60,
             encoding="utf-8", errors="replace",
+            cwd=tempfile.gettempdir(),
         )
         if result.returncode == 0 and result.stdout.strip():
             log("Claude 생성 완료", "ok")
@@ -623,20 +691,112 @@ def generate_related_tags(title: str, context: str = "",
 
 
 def generate_product_intro(keyword: str, products: list) -> str:
-    """상품 리스트 키워드로 소개 도입부 생성 (쿠팡/알리 공용)."""
-    top3 = [p.get("name", "") for p in products[:3]]
+    """상품 리스트 키워드로 소개 도입부 생성 (쿠팡/알리 공용).
+
+    톤: 후킹 우선 + 자연스러운 키워드 반복 → SEO 신호 + 클릭 유도.
+    분량은 짧게 유지(250~300자) — 이후 카드별 픽 이유로 키워드 spread.
+    """
+    top3 = [p.get("name", "") for p in products[:3]][:3]
+    n = len(products)
     prompt = (
-        f"'{keyword}' 관련 쇼핑 추천 글의 도입부를 작성해줘.\n"
-        f"대표 상품: {', '.join(top3)}\n\n"
+        f"키워드 '{keyword}' 와 대표 상품 ({', '.join(top3)}) 에 대한 한국어 "
+        f"쇼핑 블로그 도입부를 250~300자로 작성하세요.\n\n"
         f"조건:\n"
-        f"- 150~250자 내외\n"
-        f"- '{keyword}'를 선택할 때 고려할 포인트 2~3가지 간단히 언급\n"
-        f"- 자연스럽고 친근한 톤\n"
-        f"- HTML 태그 사용하지 말 것, 순수 텍스트만\n"
-        f"- 마크다운 서식(**, ## 등) 사용하지 말 것\n"
-        f"- '~입니다', '~드립니다' 체 사용"
+        f"- 첫 문장은 후킹 (질문/숫자/공감 중 하나)\n"
+        f"- '{keyword}' 키워드를 본문에 2~3회 자연스럽게 반복\n"
+        f"- 1줄짜리 짧은 문장 섞어 호흡 끊기\n"
+        f"- 마지막은 '아래 TOP{n}을 보시죠' 같은 카드 유도\n"
+        f"- 종결은 '~입니다'/'~드립니다' 체\n"
+        f"- 도입부 본문만 출력 (메타 설명·마크다운·따옴표·prefix 금지)"
     )
 
     provider = os.getenv("AI_PROVIDER", "claude").lower()
     log(f"AI 상품 소개 생성 ({provider}): {keyword}", "step")
-    return generate_text(prompt, provider=provider, max_len=400)
+    raw = generate_text(prompt, provider=provider, max_len=380)
+    cleaned = _clean_ai_output(raw)
+    # 길이 보정 — 모델이 300자 제약 어기면 자연 문장 경계에서 절단
+    if len(cleaned) > 300:
+        cut = cleaned[:300]
+        last_dot = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+        if last_dot > 180:
+            cleaned = cut[: last_dot + 1]
+        else:
+            cleaned = cut
+    return cleaned
+
+
+def generate_product_pick_reasons(keyword: str, products: list) -> list:
+    """각 상품의 한 줄 픽 이유 N개 생성 — 카드 직전 paragraph 로 사용.
+
+    카드와 카드 사이 자연어 텍스트를 분산 삽입해 SEO + 재미 + 클릭 유도.
+    각 줄은 50~80자, 후킹/리액션 톤으로 키워드 자연 노출.
+
+    Returns:
+        len(products) 와 동일 길이 리스트. 실패 시 빈 리스트.
+    """
+    if not products:
+        return []
+
+    n = len(products)
+    bullets = []
+    for i, p in enumerate(products[:n], 1):
+        nm = (p.get("name", "") or "")[:60]
+        pr = p.get("price", "") or ""
+        rt = p.get("rating", "") or ""
+        bullets.append(f"{i}. {nm} (가격 {pr or '-'}, 평점 {rt or '-'})")
+
+    prompt = (
+        f"키워드 '{keyword}' 의 추천 상품 {n}개 각각에 대한 한국어 한 줄 후킹 "
+        f"멘트를 작성하세요. 각 멘트는 50~80자, 그 상품을 클릭하고 싶게 만드는 "
+        f"짧은 문장입니다.\n\n"
+        f"상품 {n}개:\n" + "\n".join(bullets) + "\n\n"
+        f"출력 형식 (반드시 이 구조):\n"
+        f"1. <첫 번째 한 줄 후킹>\n"
+        f"2. <두 번째 한 줄 후킹>\n"
+        f"... ({n}번까지)\n\n"
+        f"조건:\n"
+        f"- 정확히 {n}줄. 각 줄 '1. ', '2. ' 식 번호로 시작\n"
+        f"- 50~80자 / 의외성·감탄·공감 톤\n"
+        f"- 키워드 '{keyword}' 또는 연관어 자연 1회 노출\n"
+        f"- 종결 '~입니다'/'~네요'/'~죠' 체\n"
+        f"- 따옴표·이모지·해시태그·마크다운·메타 prefix 금지\n"
+        f"- 후킹 본문만 출력 (\"한 줄 후킹입니다\" 같은 안내 금지)"
+    )
+
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 픽 이유 생성 ({provider}): {keyword} ({n}개)", "step")
+    text = generate_text(prompt, provider=provider, max_len=80 * n + 200)
+    if not text:
+        return []
+
+    text = _clean_ai_output(text)
+
+    # 줄바꿈이 부족하고 inline 번호("1. ... 2. ... 3. ...") 만 있는 경우
+    # number prefix 로 split 하여 강제 분리
+    if text.count("\n") < n - 1:
+        # "숫자. " 가 문장 중간에 등장하면 그 앞에서 줄바꿈 삽입
+        text = re.sub(r"(?<=[가-힣\.\!\?\)])\s+(\d+)\s*[\.\)]\s*", r"\n\1. ", text)
+
+    lines: list = []
+    for raw in text.split("\n"):
+        ln = raw.strip()
+        if not ln:
+            continue
+        # "1. ", "1) ", "1- ", "1: " 번호 prefix 제거
+        ln = _NUMBER_PREFIX_RE.sub("", ln)
+        ln = ln.strip(" \t-•·\"'")
+        if len(ln) < 10:
+            continue
+        # 메타 라인 스킵
+        meta_kw = ("한 줄 후킹", "도입부", "추천 글", "다음과 같",
+                    "아래와 같", "후킹 멘트", "멘트입니다")
+        if any(kw in ln for kw in meta_kw) and len(ln) < 50:
+            continue
+        # 너무 긴 라인 절단 (모델이 80자 어겨도 안전망)
+        if len(ln) > 100:
+            ln = ln[:100].rsplit(" ", 1)[0] if " " in ln[:100] else ln[:100]
+        lines.append(ln)
+
+    if len(lines) >= n:
+        return lines[:n]
+    return lines + [""] * (n - len(lines))
