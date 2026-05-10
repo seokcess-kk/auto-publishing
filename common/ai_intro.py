@@ -289,6 +289,97 @@ def generate_threads_caption(keyword: str, product: dict,
     return cleaned
 
 
+def generate_newspick_threads_caption(title: str, category: str = "",
+                                        max_chars: int = 230) -> str:
+    """뉴스픽 기사 제목으로 Threads 단일 게시물 본문 생성 (반말).
+
+    구조:
+        - 1줄차: 호기심 유발 후킹 (제목 핵심 1포인트)
+        - 빈 줄
+        - 2~3줄차: 짧은 안내·디테일 (사람들 반응 / 배경 / 의외성)
+        - 빈 줄
+        - 마지막: 클릭 유도 한 줄 (질문형 또는 이모지)
+
+    링크·해시태그·의무 고지는 caller (pipeline) 가 별도 부착.
+    """
+    cat_part = f" ({category} 카테고리)" if category else ""
+    prompt = (
+        f"뉴스 기사 제목 '{title}'{cat_part} 에 대한 Threads SNS 게시물 본문을 "
+        f"한국어 반말로 출력하세요.\n"
+        f"\n"
+        f"출력 형식 (정확히 5~6줄, 빈 줄 포함):\n"
+        f"[1줄차] 후킹 — 호기심 자극 한 문장 (질문·반전·숫자)\n"
+        f"[2줄차] (빈 줄)\n"
+        f"[3줄차] 본문 1 — 사람들 반응 / 배경 한 줄\n"
+        f"[4줄차] 본문 2 — 의외성·디테일 추가 한 줄\n"
+        f"[5줄차] (빈 줄)\n"
+        f"[6줄차] 마무리 — '👇 자세한 내용은 아래에서' 류 클릭 유도 한 줄\n"
+        f"\n"
+        f"톤 (가장 중요):\n"
+        f"- 무조건 반말 ('~이야', '~더라', '~네', '~지', '~어/아')\n"
+        f"- 존댓말 ('~요', '~습니다', '~세요') 절대 금지\n"
+        f"- 친구한테 카톡 보내듯 자연스럽게\n"
+        f"\n"
+        f"제약:\n"
+        f"- 라벨('[1줄차]') 출력 금지, 본문만\n"
+        f"- 해시태그·URL·구매 CTA 금지\n"
+        f"- 마크다운(**, ##) 금지, 큰따옴표로 감싸기 금지\n"
+        f"- 자극적 단어 (충격, 헉, 미친) 금지\n"
+        f"- 전체 {max_chars}자 이내\n"
+        f"- 메타 코멘트·안내 문구 금지, 즉시 1줄차로 시작\n"
+        f"\n"
+        f"좋은 출력 예시 (다른 제목 기준):\n"
+        f"이 두 사람이 부부였다고? 진짜?\n"
+        f"\n"
+        f"방송에선 한 번도 같이 안 나왔던 사이인데\n"
+        f"알고 보니 결혼 12년차라 다들 충격 받는 중\n"
+        f"\n"
+        f"👇 누구인지 자세한 내용은 아래에서 확인해봐"
+    )
+
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 뉴스픽 Threads 캡션 생성 ({provider}): {title[:30]}", "step")
+
+    if provider == "claude":
+        text = _generate_with_claude(prompt)
+    else:
+        text = _generate_with_gemini(prompt)
+    if not text:
+        fallback = "gemini" if provider == "claude" else "claude"
+        log(f"{provider} 실패, {fallback} 폴백", "warn")
+        if fallback == "claude":
+            text = _generate_with_claude(prompt)
+        else:
+            text = _generate_with_gemini(prompt)
+
+    # 후처리 — 마크다운/금지 어휘 제거 (generate_threads_caption 와 동일)
+    import re as _re
+    forbidden_phrases = [
+        "프로필 링크", "프로필링크", "지금 확인", "지금확인",
+        "구매하세요", "구매 하세요", "클릭하세요", "클릭 하세요",
+        "바로가기", "바로 가기", "광고 포함", "Disclosure",
+    ]
+    cleaned_lines: list = []
+    for raw in (text or "").split("\n"):
+        line = raw.rstrip()
+        line = line.replace("**", "").replace("__", "")
+        line = line.lstrip("-•* ").rstrip()
+        line = line.strip("\"'`")
+        if line.count("#") >= 2:
+            break
+        stripped = line.lstrip()
+        if stripped.startswith("#") and " " not in stripped:
+            continue
+        if any(p in line for p in forbidden_phrases):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines).strip()
+    cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars - 3] + "..."
+    return cleaned
+
+
 def generate_threads_chain(keyword: str, product: dict,
                             short_url: str = "",
                             max_chars_each: int = 220) -> list:
