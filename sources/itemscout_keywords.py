@@ -232,6 +232,7 @@ def _trend_weight(item: dict) -> float:
     """Pandarank rank_change 와 source 에 따라 가중치 계산.
 
     rank_change=up   → 3.0 (트렌드 상승, 우선 발행)
+    rank_change=new  → 2.5 (신규 진입 — up 보다 약간 낮춰 노이즈 완화)
     rank_change=keep → 1.5 (변동 없음, 약간 가산)
     rank_change=down → 0.7 (하락, 약간 감점)
     rank_change 없음 → 1.0 (기본 — ItemScout/DataLab)
@@ -239,11 +240,65 @@ def _trend_weight(item: dict) -> float:
     rc = (item.get("rank_change") or "").lower()
     if rc == "up":
         return 3.0
+    if rc == "new":
+        return 2.5
     if rc == "keep":
         return 1.5
     if rc == "down":
         return 0.7
     return 1.0
+
+
+_RC_PRIORITY = {"up": 0, "new": 1, "keep": 2, "": 3, "down": 4}
+
+
+def _build_top_pool(available: list, size: int = 100,
+                     quotas: dict = None) -> list:
+    """소스별 quota 로 후보 풀 구성 — monthly 단일축 정렬의 편중을 보정.
+
+    available 은 monthly 내림차순으로 정렬되어 들어온다고 가정한다.
+    그 상태에서 단순히 앞에서 N개를 자르면 monthly=0 인 Pandarank/DataLab
+    항목이 거의 들어오지 못해 트렌드 신호가 죽는다. 이를 보정하기 위해
+    소스별 quota 만큼 우선 채우고, 모자란 자리는 monthly 순서로 보충한다.
+
+    Pandarank 항목은 rank_change 우선순위(up>new>keep>none>down)로 재정렬해
+    quota 안에서도 트렌드 시그널이 살도록 한다.
+    """
+    if quotas is None:
+        quotas = {"itemscout": 50, "pandarank": 35, "datalab": 15}
+
+    buckets = {src: [] for src in quotas}
+    leftovers = []
+    for it in available:
+        src = it.get("source") or "itemscout"
+        if src in buckets:
+            buckets[src].append(it)
+        else:
+            leftovers.append(it)
+
+    buckets["pandarank"].sort(key=lambda x: (
+        _RC_PRIORITY.get((x.get("rank_change") or "").lower(), 3),
+        x.get("rank", 9999),
+    ))
+
+    result, seen = [], set()
+    for src, quota in quotas.items():
+        for it in buckets[src][:quota]:
+            kw = it["keyword"]
+            if kw not in seen:
+                seen.add(kw)
+                result.append(it)
+
+    if len(result) < size:
+        for it in available:
+            if len(result) >= size:
+                break
+            kw = it["keyword"]
+            if kw not in seen:
+                seen.add(kw)
+                result.append(it)
+
+    return result[:size]
 
 
 def _weighted_sample(items: list, n: int, weights: list) -> list:
@@ -313,15 +368,15 @@ def get_next_keywords(n: int = 3,
         log("사용 가능한 키워드 없음", "error")
         return []
 
-    # 상위 monthly 기준 상위 100개로 후보 압축 (트렌드 가중을 위해 풀 확대)
-    top_pool = available[:min(100, len(available))]
+    # 소스별 quota 로 후보 풀 구성 (monthly 단일축 편중 보정)
+    top_pool = _build_top_pool(available, size=100)
 
     if prefer_trending:
         weights = [_trend_weight(it) for it in top_pool]
-        trend_up = sum(1 for w in weights if w >= 3.0)
+        trend_hot = sum(1 for w in weights if w >= 2.5)
         selected = _weighted_sample(top_pool, n, weights)
         keywords = [item["keyword"] for item in selected]
-        log(f"키워드 선택 (trend-weighted, up={trend_up}): {keywords} (잔여 {len(available)}개)", "ok")
+        log(f"키워드 선택 (trend-weighted, up/new={trend_hot}): {keywords} (잔여 {len(available)}개)", "ok")
     else:
         # 기존 동작: 균등 랜덤
         selected = random.sample(top_pool, min(n, len(top_pool)))
