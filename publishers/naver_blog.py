@@ -441,6 +441,130 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
     }
 
 
+# ─── 알리익스프레스 상품 리스트용 documentModel 빌더 ─────────────────────
+
+def build_aliexpress_naver_document(title: str, intro: str, products: list,
+                                     keyword: str = "",
+                                     blog_id: str = "") -> dict:
+    """알리익스프레스 상품 N개를 SE 에디터 카드 N개로 조립.
+
+    build_coupang_naver_document 와 구조 동일하되 라벨/색상/의무 고지가
+    알리 브랜딩이다. 분기는 _build_document_model 의 aliexpress_products
+    kwargs 에서 호출된다.
+
+    Args:
+        products: [{name, price, image, affiliate_url, rating, sales_num, ...}]
+    """
+    components: list[dict] = []
+
+    components.append({
+        "id": _se_uuid(),
+        "layout": "default",
+        "title": [_paragraph([_styled_node(title)])],
+        "subTitle": None,
+        "align": "left",
+        "@ctype": "documentTitle",
+    })
+
+    if keyword:
+        header_nodes = [
+            _styled_node("🛒 알리익스프레스 ", color="#666666", size="fs15"),
+            _styled_node(f"{keyword} 인기상품 TOP{len(products)}",
+                         bold=True, color="#ff4747", size="fs18"),
+            _styled_node("을 추천합니다", color="#666666", size="fs15"),
+        ]
+        components.append(_text_component([_paragraph(header_nodes, align="center")]))
+        components.append(_empty_line())
+
+    if intro:
+        intro_paragraphs = []
+        for line in intro.split("\n"):
+            line = line.strip()
+            if line:
+                intro_paragraphs.append(
+                    _paragraph([_styled_node(line, color="#444444", size="fs15")])
+                )
+        if intro_paragraphs:
+            components.append(_text_component(intro_paragraphs))
+            components.append(_empty_line())
+
+    for idx, product in enumerate(products, start=1):
+        name      = product.get("name", "") or ""
+        price     = product.get("price", "") or ""
+        aff_url   = product.get("affiliate_url", "") or product.get("url", "") or ""
+        rating    = product.get("rating", "") or ""
+        sales     = str(product.get("sales_num", "") or "")
+
+        cell_paragraphs = [
+            _paragraph([
+                _styled_node(f"  {idx}위  ", bold=True, color="#ffffff",
+                             size="fs15", bg="#ff4747"),
+            ], align="center"),
+            _paragraph([_styled_node("")]),
+            _paragraph([_styled_node(name, bold=True, color="#222222", size="fs16")],
+                       align="center"),
+            _paragraph([_styled_node("")]),
+        ]
+
+        if price:
+            cell_paragraphs.append(_paragraph([
+                _styled_node(f"{price}", bold=True, color="#ff4747", size="fs28")
+            ], align="center"))
+
+        meta_nodes = []
+        if rating:
+            meta_nodes.append(_styled_node(f"⭐ {rating}", color="#ff9800", size="fs13"))
+        if sales and sales != "0":
+            if meta_nodes:
+                meta_nodes.append(_styled_node("   ", size="fs13"))
+            meta_nodes.append(_styled_node(f"판매 {sales}", color="#888888", size="fs13"))
+        if meta_nodes:
+            cell_paragraphs.append(_paragraph(meta_nodes, align="center"))
+
+        cell_paragraphs.append(_paragraph([_styled_node("")]))
+
+        if aff_url:
+            cell_paragraphs.append(_paragraph([
+                _styled_node("▶ 알리에서 보러가기 ◀",
+                             bold=True, color="#ffffff", size="fs15",
+                             bg="#ff4747", link_url=aff_url),
+            ], align="center"))
+        elif name:
+            cell_paragraphs.append(_paragraph([
+                _styled_node("(링크 준비 중)", color="#999999", size="fs13"),
+            ], align="center"))
+
+        cell_paragraphs.append(_paragraph([_styled_node("")]))
+
+        product_row = _table_row([_table_cell(cell_paragraphs)])
+        components.append(_table_component([product_row], col_count=1, width=60))
+        components.append(_empty_line())
+
+    components.append(_text_component([
+        _paragraph([_styled_node(
+            "※ 알리익스프레스 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            color="#999999", size="fs11")], align="center")
+    ]))
+
+    return {
+        "documentId": "",
+        "document": {
+            "version": "2.8.0",
+            "theme": "default",
+            "language": "ko-KR",
+            "id": str(uuid.uuid4()).replace("-", "").upper()[:26],
+            "components": components,
+            "di": {
+                "dif": False,
+                "dio": [
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                    {"dis": "N", "dia": {"t": 0, "p": 0, "st": 94, "sk": 40}},
+                ],
+            },
+        },
+    }
+
+
 # ─── 뉴스픽 단일 기사용 documentModel 빌더 ───────────────────────────────
 
 def build_newspick_naver_document(title: str, article: dict,
@@ -598,6 +722,13 @@ class NaverBlogPublisher(Publisher):
         if coupang_products:
             doc = build_coupang_naver_document(
                 title, intro, coupang_products,
+                keyword=keyword, blog_id=self.blog_id)
+            return json.dumps(doc, ensure_ascii=False)
+
+        aliexpress_products = kwargs.get("aliexpress_products")
+        if aliexpress_products:
+            doc = build_aliexpress_naver_document(
+                title, intro, aliexpress_products,
                 keyword=keyword, blog_id=self.blog_id)
             return json.dumps(doc, ensure_ascii=False)
 
