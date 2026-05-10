@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from common.coupang_stats import fetch_daily_stats
+from common.aliexpress_stats import fetch_yesterday_orders as fetch_ali_orders
 from common.logger import log
 from common.publish_queue import _load as _load_queue, DEFAULT_QUEUE_PATH
 
@@ -93,14 +94,75 @@ def _row_to_normalized(row: dict) -> dict:
     }
 
 
+def _aggregate_aliexpress(yest_iso: str, queue: list, roi_db: dict) -> int:
+    """알리 TOP API 의 어제 주문 → 키워드별 ROI 누적. 처리한 주문 수 반환.
+
+    publish_queue 의 source=aliexpress 발행 키워드들과 어제 주문을 매칭.
+    1차 — 어제 주문 총합을 어제 발행 키워드 수로 균등 분배 (쿠팡과 동일).
+    추후 product_id 단위 정밀 매칭은 publish_queue 의 affiliate_url 패턴 확정 후.
+    """
+    ali_pubs = [
+        it for it in queue
+        if (it.get("source") or "") == "aliexpress"
+        and (it.get("keyword") or "").strip()
+        and (it.get("queued_at") or "").startswith(yest_iso)
+    ]
+    if not ali_pubs:
+        return 0
+
+    orders = fetch_ali_orders()
+    if not orders:
+        log("[ROI] 알리 주문 응답 없음 — TOP 자격 또는 어제 주문 0", "info")
+        return 0
+
+    total_orders = len(orders)
+    total_paid = 0.0
+    total_comm = 0.0
+    for od in orders:
+        try:
+            total_paid += float(od.get("paid_amount", {}).get("amount") or
+                                  od.get("paid_amount") or 0)
+            total_comm += float(od.get("estimated_commission", {}).get("amount") or
+                                  od.get("estimated_commission") or
+                                  od.get("commission") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    n = len(ali_pubs)
+    per_orders = total_orders // max(n, 1)
+    per_comm   = int(total_comm) // max(n, 1)
+
+    for it in ali_pubs:
+        kw = it["keyword"]
+        agg = roi_db.setdefault(kw, {
+            "clicks": 0, "orders": 0, "commission": 0,
+            "publishes": 0, "first_seen": yest_iso,
+        })
+        agg["orders"]     += per_orders
+        agg["commission"] += per_comm
+        agg["publishes"]  += 1
+        agg["last"]        = yest_iso
+
+    log(f"[ROI] 알리 어제 주문 {total_orders}건 / 커미션 {int(total_comm)} → "
+        f"{n}개 키워드 분배", "ok")
+    return total_orders
+
+
 def run() -> None:
-    """일일 ROI 집계 — 어제 1일치."""
+    """일일 ROI 집계 — 어제 1일치 (쿠팡 + 알리)."""
     yesterday = date.today() - timedelta(days=1)
     log(f"[ROI] 집계 시작 — 대상일 {yesterday}", "step")
 
-    # 1) 어제 publish_queue 항목 (source=coupang + keyword 보유)
     queue = _load_queue(DEFAULT_QUEUE_PATH)
     yest_iso = yesterday.isoformat()
+
+    # 알리 ROI 도 같은 roi_db 에 누적 — 쿠팡 처리 직전에 미리 로드
+    roi_db = _load_json(ROI_PATH, {})
+
+    # ── 알리익스프레스 ROI ──────────────────────────────────────────────────
+    ali_processed = _aggregate_aliexpress(yest_iso, queue, roi_db)
+
+    # ── 쿠팡 파트너스 ROI ───────────────────────────────────────────────────
     coupang_pubs = [
         it for it in queue
         if (it.get("source") or "") == "coupang"
@@ -109,7 +171,10 @@ def run() -> None:
     ]
     log(f"[ROI] 어제 쿠팡 발행 후보: {len(coupang_pubs)}건", "info")
     if not coupang_pubs:
-        log("[ROI] 어제 쿠팡 발행 없음 — 종료", "info")
+        log("[ROI] 어제 쿠팡 발행 없음 — 알리만 처리", "info")
+        # 알리도 0 이면 진짜 종료, 아니면 알리 결과만 저장
+        if ali_processed > 0:
+            _save_json(ROI_PATH, roi_db)
         return
 
     # 2) 쿠팡 stats 조회
@@ -147,7 +212,6 @@ def run() -> None:
         "commission": total_comm // max(n, 1),
     }
 
-    roi_db = _load_json(ROI_PATH, {})
     for it in coupang_pubs:
         kw = it["keyword"]
         agg = roi_db.setdefault(kw, {
