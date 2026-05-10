@@ -38,7 +38,19 @@ PANDARANK_TOP_CATEGORIES = {
 }
 
 # ─── 중분류(2차) 카테고리 코드 ────────────────────────────────────────────────
-# 대분류 + 중분류 총 194개. 대분류가 앞에 오므로 중복된 bestKeyword 는 대분류 라벨이 우선된다.
+# 대분류 + 중분류 총 200개 명시. 그중 PANDARANK_DEAD_CIDS 6개는 /home API 가
+# 일관되게 빈 응답을 주므로 수집 단계에서 자동 스킵한다.
+
+# /api/categories/home/{cid} 가 비어있어 수집되지 않는 cid (구조적 dead).
+# 정기 재검증 후 데이터가 돌아오면 셋에서 제거.
+PANDARANK_DEAD_CIDS = {
+    "50000009",  # 대분류: 여가/생활편의 (대분류 자체 빈 응답)
+    "50000099",  # 디지털/가전 산하
+    "50007127",  # 출산/육아 산하
+    "50007256",  # 여가/생활편의 산하
+    "50007261",  # 여가/생활편의 산하
+    "50007286",  # 여가/생활편의 산하
+}
 
 PANDARANK_SUB_CATEGORIES = [
     # 대분류 10개
@@ -67,15 +79,32 @@ PANDARANK_SUB_CATEGORIES = [
 ]
 
 
-# ─── 대분류 prefix 매핑 (중분류 cid → 대분류명) ────────────────────────────────
-# 중분류 cid 로부터 대분류를 추정하기 어렵기 때문에, pandarank 호출 순서 기반으로
-# 대분류 → 중분류 순회 중 "카테고리 미상" 은 "기타"로 라벨링한다.
+# ─── 카테고리 트리 매핑 ────────────────────────────────────────────────────────
+# /api/categories 가 4-level 트리(category_id → category1_nm)를 제공하므로
+# 그것을 동적으로 받아와 매핑한다. 트리 조회가 실패하면 대분류 정적 매핑으로 fallback.
 
-def _guess_top_category(cid: str, last_top: str) -> str:
-    """주어진 cid 가 대분류면 해당 이름, 중분류면 직전 대분류명 사용."""
-    if cid in PANDARANK_TOP_CATEGORIES:
-        return PANDARANK_TOP_CATEGORIES[cid]
-    return last_top or "기타"
+PANDARANK_TREE_URL = "https://pandarank.net/api/categories"
+
+
+def _fetch_category_tree() -> dict:
+    """cid → 대분류명(category1_nm) 매핑. 실패 시 빈 dict."""
+    try:
+        resp = requests.get(PANDARANK_TREE_URL,
+                             headers={"User-Agent": FIXED_UA}, timeout=10)
+        resp.raise_for_status()
+        item0 = (resp.json().get("items") or [{}])[0]
+        mapping = {}
+        for v in item0.values():
+            if isinstance(v, list):
+                for c in v:
+                    cid = c.get("category_id")
+                    top = c.get("category1_nm")
+                    if cid and top:
+                        mapping[cid] = top
+        return mapping
+    except Exception as e:
+        log(f"Pandarank 카테고리 트리 조회 실패: {e}", "warn")
+        return {}
 
 
 # ─── 수집 함수 ────────────────────────────────────────────────────────────────
@@ -120,18 +149,27 @@ def collect_pandarank_keywords(delay: float = 0.3,
           "cid": ..., "rank_change": "up/down/-", "monthly": 0}, ...]
         (monthly 는 판다랭크가 제공하지 않으므로 0 고정 — 정렬 시엔 itemscout 가 우선됨)
     """
-    cids = PANDARANK_SUB_CATEGORIES if include_subcategories else list(PANDARANK_TOP_CATEGORIES.keys())
-    log(f"Pandarank 수집 시작 — 대상 카테고리 {len(cids)}개", "step")
+    raw_cids = PANDARANK_SUB_CATEGORIES if include_subcategories else list(PANDARANK_TOP_CATEGORIES.keys())
+    cids = [c for c in raw_cids if c not in PANDARANK_DEAD_CIDS]
+    skipped = len(raw_cids) - len(cids)
+    log(f"Pandarank 수집 시작 — 대상 카테고리 {len(cids)}개"
+        + (f" (dead {skipped}개 자동 스킵)" if skipped else ""), "step")
+
+    cid_to_top = _fetch_category_tree()
+    if not cid_to_top:
+        cid_to_top = dict(PANDARANK_TOP_CATEGORIES)
+        log("카테고리 트리 미사용 — 정적 대분류 매핑 fallback", "warn")
+    else:
+        unmapped = sum(1 for c in cids if c not in cid_to_top)
+        if unmapped:
+            log(f"카테고리 트리 매핑 — {len(cids)-unmapped}/{len(cids)} 적중 (미매핑 {unmapped}개는 '기타')", "info")
 
     results = []
     seen = set()
-    last_top = ""
     ok_count = 0
 
     for idx, cid in enumerate(cids, 1):
-        top_name = _guess_top_category(cid, last_top)
-        if cid in PANDARANK_TOP_CATEGORIES:
-            last_top = top_name
+        top_name = cid_to_top.get(cid, "기타")
 
         items = _fetch_category(cid)
         added = 0
