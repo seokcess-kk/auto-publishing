@@ -90,11 +90,70 @@ def _build_http(sa_json_path: str):
     return credentials.authorize(httplib2.Http())
 
 
+def _build_http_adc():
+    """Application Default Credentials (사용자 OAuth) 기반 인증.
+
+    `gcloud auth application-default login` 으로 저장된 본인 OAuth 토큰을 사용.
+    Search Console 에서 SA 이메일 추가가 차단된 환경에서 우회 — 본인이 이미
+    사이트 소유자라 추가 권한 부여 없이 즉시 색인 가능.
+    """
+    try:
+        from oauth2client.client import GoogleCredentials
+        import httplib2
+    except ImportError as e:
+        raise ImportError(
+            f"oauth2client 또는 httplib2 패키지가 없습니다: {e}\n"
+            "pip install oauth2client httplib2"
+        ) from e
+
+    credentials = GoogleCredentials.get_application_default().create_scoped(SCOPES)
+    return credentials.authorize(httplib2.Http())
+
+
+def _get_adc_quota_project() -> str:
+    """ADC 사용자 인증의 quota project 반환."""
+    for env_name in ("GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_QUOTA_PROJECT"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+
+    adc_path = os.path.join(
+        os.getenv("APPDATA", ""),
+        "gcloud",
+        "application_default_credentials.json",
+    )
+    if not os.path.exists(adc_path):
+        return ""
+
+    try:
+        with open(adc_path, "r", encoding="utf-8") as f:
+            return json.load(f).get("quota_project_id", "").strip()
+    except Exception:
+        return ""
+
+
 def _get_default_http():
-    """DEFAULT 키로 http 클라이언트 반환. 없으면 None."""
+    """기본 인증 http 클라이언트 반환. SA 가 없거나 USE_ADC=true 면 ADC 폴백."""
+    use_adc = os.getenv("GOOGLE_INDEXING_USE_ADC", "").lower() == "true"
+
+    if use_adc:
+        try:
+            log("[Google 색인] Application Default Credentials 사용", "info")
+            return _build_http_adc()
+        except Exception as e:
+            log(f"[Google 색인] ADC 로드 실패: {e}", "error")
+            return None
+
     path = _get_sa_json_path(domain="", allow_default=True)
     if not path:
-        return None
+        # SA 가 아예 설정되지 않았어도 ADC 가 있으면 폴백 시도
+        try:
+            from oauth2client.client import GoogleCredentials
+            GoogleCredentials.get_application_default()
+            log("[Google 색인] SA 키 없음 — ADC 폴백 사용", "info")
+            return _build_http_adc()
+        except Exception:
+            return None
     try:
         return _build_http(path)
     except Exception as e:
@@ -126,6 +185,7 @@ def submit_urls(urls: list) -> dict:
 
     # DEFAULT SA 경로 (403 폴백용 비교)
     _default_sa_path = _get_sa_json_path(domain="", allow_default=True)
+    use_adc = os.getenv("GOOGLE_INDEXING_USE_ADC", "").lower() == "true"
 
     for idx, url in enumerate(urls[:DAILY_LIMIT], start=1):
         from urllib.parse import urlparse
@@ -140,24 +200,39 @@ def submit_urls(urls: list) -> dict:
 
         # ── http 클라이언트 확보 ──────────────────────────────────────────────
         if domain not in _http_cache:
-            sa_path = _get_sa_json_path(domain=domain, allow_default=True)
+            sa_path = "" if use_adc else _get_sa_json_path(domain=domain, allow_default=True)
             if not sa_path:
-                log(f"[Google 색인] SA 키 없음: {domain} → 건너뜀", "warn")
-                results[url] = "no_permission"
-                continue
-            try:
-                _http_cache[domain] = (sa_path, _build_http(sa_path))
-            except Exception as e:
-                log(f"[Google 색인] SA 로드 실패 ({domain}): {e}", "error")
-                results[url] = "error"
-                continue
+                if _default_http is None:
+                    _default_http = _get_default_http()
+                if _default_http:
+                    _http_cache[domain] = ("__adc__", _default_http)
+                else:
+                    if use_adc:
+                        log(f"[Google 색인] ADC 인증 없음: {domain} → 건너뜀", "warn")
+                        results[url] = "error"
+                    else:
+                        log(f"[Google 색인] SA 키 없음: {domain} → 건너뜀", "warn")
+                        results[url] = "no_permission"
+                    continue
+            else:
+                try:
+                    _http_cache[domain] = (sa_path, _build_http(sa_path))
+                except Exception as e:
+                    log(f"[Google 색인] SA 로드 실패 ({domain}): {e}", "error")
+                    results[url] = "error"
+                    continue
 
         sa_path_used, http = _http_cache[domain]
         body = json.dumps({"url": url, "type": "URL_UPDATED"})
+        headers = {"Content-Type": "application/json"}
+        if sa_path_used == "__adc__":
+            quota_project = _get_adc_quota_project()
+            if quota_project:
+                headers["x-goog-user-project"] = quota_project
 
         # ── API 호출 ──────────────────────────────────────────────────────────
         try:
-            response, resp_body = http.request(ENDPOINT, method="POST", body=body)
+            response, resp_body = http.request(ENDPOINT, method="POST", body=body, headers=headers)
             status = response.get("status", "")
 
             if status == "200":
@@ -172,8 +247,15 @@ def submit_urls(urls: list) -> dict:
                 break
 
             elif status in ("403", "401"):
+                msg = json.loads(resp_body.decode()).get("error", {}).get("message", "") if resp_body else ""
+                if "requires a quota project" in msg or "quota project" in msg:
+                    log(f"[Google 색인] {idx}. ADC quota project 미설정: {url}", "warn")
+                    log("  → gcloud auth application-default set-quota-project <PROJECT_ID> 실행 필요", "info")
+                    results[url] = "error"
+                    continue
+
                 # 권한 없음 → DEFAULT SA로 1회 재시도
-                if sa_path_used != _default_sa_path and _default_sa_path:
+                if sa_path_used != "__adc__" and sa_path_used != _default_sa_path and _default_sa_path:
                     log(f"[Google 색인] {idx}. 403 → DEFAULT SA 재시도: {url}", "info")
                     if _default_http is None:
                         _default_http = _get_default_http()
@@ -193,9 +275,11 @@ def submit_urls(urls: list) -> dict:
                         results[url] = "no_permission"
                 else:
                     # 이미 DEFAULT SA를 썼는데도 403
-                    msg = json.loads(resp_body.decode()).get("error", {}).get("message", "") if resp_body else ""
                     log(f"[Google 색인] {idx}. 권한 없음 [{status}] {url}: {msg}", "warn")
-                    log(f"  → Search Console에서 SA 이메일을 소유자로 추가하세요", "info")
+                    if sa_path_used == "__adc__":
+                        log("  → Search Console에서 현재 Google 계정을 URL 속성 소유자로 확인하세요", "info")
+                    else:
+                        log("  → Search Console에서 SA 이메일을 소유자로 추가하세요", "info")
                     results[url] = "no_permission"
 
             else:

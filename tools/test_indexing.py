@@ -45,8 +45,10 @@ def test_google(url: str) -> str:
     # 자격 점검
     has_default = bool(os.getenv("GOOGLE_INDEXING_KEY_DEFAULT"))
     has_legacy  = bool(os.getenv("GOOGLE_INDEXING_SA_JSON"))
-    if not (has_default or has_legacy):
-        print("  ✗ GOOGLE_INDEXING_KEY_DEFAULT 또는 GOOGLE_INDEXING_SA_JSON 미설정")
+    use_adc = os.getenv("GOOGLE_INDEXING_USE_ADC", "").lower() == "true"
+    if not (has_default or has_legacy or use_adc):
+        print("  ✗ GOOGLE_INDEXING_KEY_DEFAULT / GOOGLE_INDEXING_SA_JSON 미설정")
+        print("    또는 GOOGLE_INDEXING_USE_ADC=true 미설정")
         return "skip"
 
     try:
@@ -56,14 +58,16 @@ def test_google(url: str) -> str:
         return "error"
 
     sa_path = _get_sa_json_path(domain="", allow_default=True)
-    if not sa_path:
+    if use_adc:
+        print("  인증   : Application Default Credentials")
+    elif not sa_path:
         print("  ✗ SA JSON 파일 경로 결정 실패 — env 값 확인")
         return "skip"
-    if not os.path.exists(sa_path):
+    elif not os.path.exists(sa_path):
         print(f"  ✗ SA JSON 파일이 존재하지 않음: {sa_path}")
         return "error"
-
-    print(f"  SA JSON: {sa_path}")
+    else:
+        print(f"  SA JSON: {sa_path}")
     print(f"  URL    : {url}")
     print("  → 색인 요청 중...")
     try:
@@ -78,7 +82,7 @@ def test_google(url: str) -> str:
     msg_map = {
         "ok":            "성공 — Google Indexing 요청 통과",
         "limit":         "일일 한도 200건 초과",
-        "no_permission": "권한 없음 — Search Console 에 SA 이메일 소유자 추가 필요",
+        "no_permission": "권한 없음 — Search Console 소유자 권한 확인 필요",
         "error":         "API 오류 — 위 로그 확인",
     }
     print(f"  {icon} 결과: {status} ({msg_map.get(status, '알 수 없음')})")
