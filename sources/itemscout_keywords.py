@@ -6,8 +6,9 @@ ItemScout 키워드 수집 및 풀 관리 모듈
     POST https://api.itemscout.io/api/category/{cid}/data
   - 12개 카테고리 × 최대 500개 = 최대 6,000개 키워드
   - 중복 제거 후 keyword_pool.json 에 저장
-  - 발행 완료 키워드는 used_keywords.json 에 영구 기록
-  - 풀에서 키워드 꺼낼 때 used_keywords 에 있으면 자동 제외
+  - 발행 완료 키워드는 used_keywords.json 에 timestamp 와 함께 기록
+  - 풀에서 키워드 꺼낼 때 USED_KEYWORDS_TTL_DAYS(기본 90일) 이내 키워드만
+    제외 — 그 이상 미사용된 키워드는 자동 재활성화돼 트렌드 변화에 대응
 
 참조: 00.Old_Source/상품키워드추출(datalab_itemscout)/
       itemscoute(requests)_naverdatalab(requests)_ver3.py
@@ -16,7 +17,7 @@ import os
 import json
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib import parse
 
 import requests
@@ -100,19 +101,84 @@ def save_keyword_pool(pool: dict) -> None:
     _save_json(KEYWORD_POOL_PATH, pool)
 
 
-def load_used_keywords() -> dict:
-    """사용 완료 키워드 로드. {keyword: "YYYY-MM-DD HH:MM:SS"}"""
+def _load_used_keywords_raw() -> dict:
+    """저장된 used_keywords 원본 그대로 로드 — TTL 필터 적용 없이."""
     return _load_json(USED_KEYWORDS_PATH, {})
 
 
+def load_used_keywords() -> dict:
+    """사용 완료 키워드 로드 — TTL(USED_KEYWORDS_TTL_DAYS) 적용 후 active 반환.
+
+    USED_KEYWORDS_TTL_DAYS 일 이상 미사용된 키워드는 dict 에서 자동 제외돼
+    풀에서 다시 발행 가능. 0 또는 음수면 영구 보관(레거시 동작).
+
+    원본은 디스크에 그대로 남고 mark_keywords_used 호출 시 새 timestamp 로
+    갱신되거나 prune_used_keywords() 로 명시 cleanup 가능.
+    """
+    raw = _load_used_keywords_raw()
+    try:
+        ttl_days = int(os.getenv("USED_KEYWORDS_TTL_DAYS", "90"))
+    except ValueError:
+        ttl_days = 90
+    if ttl_days <= 0:
+        return raw
+
+    cutoff = datetime.now() - timedelta(days=ttl_days)
+    active = {}
+    for kw, ts in raw.items():
+        try:
+            t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            if t >= cutoff:
+                active[kw] = ts
+            # 만료 → active 에서 제외 (= 풀에서 다시 사용 가능)
+        except (TypeError, ValueError):
+            # timestamp 손상 시 안전하게 active 유지
+            active[kw] = ts
+    return active
+
+
 def mark_keywords_used(keywords: list) -> None:
-    """발행 완료된 키워드를 used_keywords.json 에 영구 기록."""
-    data = load_used_keywords()
+    """발행 완료된 키워드를 used_keywords.json 에 기록 (timestamp 포함)."""
+    data = _load_used_keywords_raw()
     now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for kw in keywords:
         data[kw] = now
     _save_json(USED_KEYWORDS_PATH, data)
     log(f"발행 완료 키워드 {len(keywords)}개 기록: {keywords}", "info")
+
+
+def prune_used_keywords() -> int:
+    """만료된 used_keywords 항목을 디스크에서 영구 제거. 제거 개수 반환.
+
+    USED_KEYWORDS_TTL_DAYS 가 0 이하면 아무 것도 하지 않음. 운영 도구나
+    스케줄에서 호출해 풀 신선도 유지.
+    """
+    try:
+        ttl_days = int(os.getenv("USED_KEYWORDS_TTL_DAYS", "90"))
+    except ValueError:
+        ttl_days = 90
+    if ttl_days <= 0:
+        return 0
+
+    raw = _load_used_keywords_raw()
+    cutoff = datetime.now() - timedelta(days=ttl_days)
+    kept = {}
+    expired = []
+    for kw, ts in raw.items():
+        try:
+            t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            if t >= cutoff:
+                kept[kw] = ts
+            else:
+                expired.append(kw)
+        except (TypeError, ValueError):
+            kept[kw] = ts
+
+    if expired:
+        _save_json(USED_KEYWORDS_PATH, kept)
+        log(f"키워드 풀 회전: {len(expired)}개 만료 → 재활성화 "
+            f"(TTL {ttl_days}일)", "info")
+    return len(expired)
 
 
 def get_pool_status() -> str:
