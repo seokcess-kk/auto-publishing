@@ -228,19 +228,57 @@ def collect_all_keywords(max_per_category: int = 500,
 
 # ─── 풀에서 키워드 꺼내기 ────────────────────────────────────────────────────
 
+def _trend_weight(item: dict) -> float:
+    """Pandarank rank_change 와 source 에 따라 가중치 계산.
+
+    rank_change=up   → 3.0 (트렌드 상승, 우선 발행)
+    rank_change=keep → 1.5 (변동 없음, 약간 가산)
+    rank_change=down → 0.7 (하락, 약간 감점)
+    rank_change 없음 → 1.0 (기본 — ItemScout/DataLab)
+    """
+    rc = (item.get("rank_change") or "").lower()
+    if rc == "up":
+        return 3.0
+    if rc == "keep":
+        return 1.5
+    if rc == "down":
+        return 0.7
+    return 1.0
+
+
+def _weighted_sample(items: list, n: int, weights: list) -> list:
+    """가중치 적용 비복원 샘플링 (Efraimidis-Spirakis A-Res 알고리즘).
+
+    각 항목에 random()**(1/weight) 키를 부여하고 큰 순으로 n개 선택.
+    weight 가 클수록 선택될 확률이 높아진다.
+    """
+    if not items:
+        return []
+    n = min(n, len(items))
+    keyed = [
+        (random.random() ** (1.0 / max(w, 1e-9)), idx)
+        for idx, w in enumerate(weights)
+    ]
+    keyed.sort(reverse=True)
+    return [items[idx] for _, idx in keyed[:n]]
+
+
 def get_next_keywords(n: int = 3,
                        refill_threshold: int = 50,
-                       categories: list = None) -> list:
+                       categories: list = None,
+                       prefer_trending: bool = True) -> list:
     """
     키워드 풀에서 미사용 키워드 n개 반환.
     - used_keywords.json 에 있는 키워드는 자동 제외
     - 잔여 키워드가 refill_threshold 이하면 자동 재수집
     - categories 지정 시 해당 카테고리 키워드만 우선 반환
+    - prefer_trending=True 면 Pandarank rank_change=up 키워드를 우선 발행
 
     Args:
         n:                  가져올 키워드 수
         refill_threshold:   이 개수 이하면 자동 재수집 트리거
         categories:         특정 카테고리 필터 (None = 전체)
+        prefer_trending:    True 면 트렌드 가중 샘플링, False 면 단순 랜덤
 
     Returns:
         키워드 문자열 리스트
@@ -275,12 +313,21 @@ def get_next_keywords(n: int = 3,
         log("사용 가능한 키워드 없음", "error")
         return []
 
-    # 상위 monthly 기준 상위 50개 중에서 랜덤 n개 선택 (다양성 확보)
-    top_pool = available[:min(50, len(available))]
-    selected = random.sample(top_pool, min(n, len(top_pool)))
-    keywords = [item["keyword"] for item in selected]
+    # 상위 monthly 기준 상위 100개로 후보 압축 (트렌드 가중을 위해 풀 확대)
+    top_pool = available[:min(100, len(available))]
 
-    log(f"키워드 선택: {keywords} (잔여 {len(available)}개)", "ok")
+    if prefer_trending:
+        weights = [_trend_weight(it) for it in top_pool]
+        trend_up = sum(1 for w in weights if w >= 3.0)
+        selected = _weighted_sample(top_pool, n, weights)
+        keywords = [item["keyword"] for item in selected]
+        log(f"키워드 선택 (trend-weighted, up={trend_up}): {keywords} (잔여 {len(available)}개)", "ok")
+    else:
+        # 기존 동작: 균등 랜덤
+        selected = random.sample(top_pool, min(n, len(top_pool)))
+        keywords = [item["keyword"] for item in selected]
+        log(f"키워드 선택: {keywords} (잔여 {len(available)}개)", "ok")
+
     return keywords
 
 
