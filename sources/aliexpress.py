@@ -126,6 +126,23 @@ def _parse_items(obj: dict, count: int) -> list:
     return products
 
 
+# ─── 키워드/상품 매칭 검증 ──────────────────────────────────────────────────
+
+def is_keyword_mismatch(keyword: str, products: list, min_match: int = 1) -> bool:
+    """상품명에 키워드 substring 매칭이 min_match 미만이면 mismatch (True).
+
+    예: 키워드 '에버랜드' 검색 결과 5개 상품 모두 '코스프레 의상', '마네킹 헤드'
+    등으로 키워드가 0개 등장 → mismatch=True. 호출 측이 발행 스킵 또는
+    풀에서 제외 결정에 사용.
+    """
+    kw = (keyword or "").strip().lower()
+    if not kw or not products:
+        return False
+    hits = sum(1 for p in products
+                if kw in (p.get("name", "") or "").lower())
+    return hits < min_match
+
+
 # ─── AliexpressSource ──────────────────────────────────────────────────────
 
 class AliexpressSource:
@@ -500,12 +517,30 @@ class AliexpressSource:
             return ""
 
     def search(self, keyword: str, count: int = 10,
-               require_affiliate: bool = True) -> list:
-        """검색 + 제휴링크 생성."""
+               require_affiliate: bool = True,
+               min_keyword_match: int = 1) -> list:
+        """검색 + 제휴링크 생성.
+
+        min_keyword_match: 검색 결과 N개 중 상품명에 키워드 substring 매칭이
+            이만큼 있어야 발행 가치 있음으로 판단. 미달 시 빈 결과 반환 —
+            한국 고유명사 등 알리에 적합하지 않은 키워드의 잡상품 발행 차단.
+            0 으로 두면 검증 비활성.
+        """
         log(f"알리 검색 (tracking={self.tracking_id}): {keyword}", "step")
 
         products = self._search_products(keyword, count=count * 2)  # 여유분
         if not products:
+            return []
+
+        # 키워드/상품 매칭 검증 — 알리는 한국 고유명사에 매칭되는 상품이 없어
+        # 잡상품을 반환하는 케이스가 흔함. 발행 전에 차단.
+        if min_keyword_match > 0 and is_keyword_mismatch(keyword, products,
+                                                          min_match=min_keyword_match):
+            hits = sum(1 for p in products
+                        if (keyword or "").strip().lower()
+                        in (p.get("name", "") or "").lower())
+            log(f"키워드 '{keyword}' 매칭 부족 ({hits}/{len(products)}) — "
+                f"발행 가치 낮음, 빈 결과 반환", "warn")
             return []
 
         if not require_affiliate:

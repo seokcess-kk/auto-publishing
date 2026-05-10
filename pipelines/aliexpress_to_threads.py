@@ -152,7 +152,14 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         source.close()
 
     if not products:
-        log(f"'{kw}' 상품/링크 수집 실패", "warn")
+        log(f"'{kw}' 상품/링크 수집 실패 또는 키워드 매칭 부족", "warn")
+        # 강제 키워드가 아니면 풀에서 점진 제외 — 알리 부적합 키워드 누적 방지
+        if not keyword:
+            try:
+                mark_keywords_used([kw])
+                log(f"풀 제외: {kw}", "info")
+            except Exception as e:
+                log(f"키워드 풀 제외 실패 ({e})", "warn")
         from common.notifier import notify_pipeline_result
         notify_pipeline_result("알리→Threads", 0, 1, details=f"수집 실패 ({kw})")
         return

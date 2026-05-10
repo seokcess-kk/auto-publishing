@@ -188,6 +188,7 @@ def run(count: int = 1, auto_push: bool = True, count_per_keyword: int = 10) -> 
 
     published_keywords = []
     created_files = []
+    last_url = ""
 
     for keyword, products in collected:
         title, body, category, tags = _build_markdown(keyword, products)
@@ -205,6 +206,7 @@ def run(count: int = 1, auto_push: bool = True, count_per_keyword: int = 10) -> 
                 os.path.join(publisher.posts_dir, result.post_id)
             )
             if result.url:
+                last_url = result.url
                 from common.publish_queue import add_url as _add_url
                 _add_url(result.url, platform="github", title=title)
         time.sleep(random.uniform(5, 10))
@@ -226,6 +228,7 @@ def run(count: int = 1, auto_push: bool = True, count_per_keyword: int = 10) -> 
         "알리→GitHub Pages",
         len(published_keywords), count,
         details=f"키워드: {', '.join(published_keywords)}" if published_keywords else "",
+        url=last_url,
     )
 
 

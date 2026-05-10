@@ -106,17 +106,27 @@ def run(count_per_keyword: "int | None" = None,
     source = AliexpressSource(tracking_id=tracking_id)
 
     collected: list[tuple[str, list]] = []
+    skipped_keywords: list[str] = []
     try:
         for kw in keywords[:post_count]:
             log(f"키워드 처리: {kw}", "step")
             products = source.search(kw, count=count_per_keyword,
                                       require_affiliate=True)
             if not products:
-                log(f"'{kw}' 상품/링크 수집 실패, 건너뜀", "warn")
+                log(f"'{kw}' 상품/링크 수집 실패 또는 매칭 부족 — 건너뜀", "warn")
+                skipped_keywords.append(kw)
                 continue
             collected.append((kw, products))
     finally:
         source.close()
+
+    # 알리에 적합하지 않은 키워드는 풀에서 점진 제외 (mismatch 누적 방지)
+    if skipped_keywords and not keyword:
+        try:
+            mark_keywords_used(skipped_keywords)
+            log(f"풀 제외 ({len(skipped_keywords)}개): {skipped_keywords}", "info")
+        except Exception as e:
+            log(f"키워드 풀 제외 실패 ({e})", "warn")
 
     if not collected:
         log("수집된 상품 없음", "warn")

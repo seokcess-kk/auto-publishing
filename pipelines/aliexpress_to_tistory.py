@@ -56,17 +56,27 @@ def run(count_per_keyword: int = 10) -> None:
 
     # collected: [(keyword, products), ...]
     collected: list[tuple[str, list]] = []
+    skipped_keywords: list[str] = []
     try:
         for keyword in keywords[:post_count]:
             log(f"키워드 처리: {keyword}", "step")
             products = source.search(keyword, count=count_per_keyword, require_affiliate=True)
             if not products:
-                log(f"'{keyword}' 상품/링크 수집 실패, 건너뜀", "warn")
+                log(f"'{keyword}' 상품/링크 수집 실패 또는 매칭 부족 — 건너뜀", "warn")
+                skipped_keywords.append(keyword)
                 continue
             collected.append((keyword, products))
     finally:
         # source 의 sync_playwright 를 명시적으로 종료해야 publisher 가 재사용 가능
         source.close()
+
+    # 알리에 적합하지 않은 키워드는 풀에서 점진 제외 (mismatch 누적 방지)
+    if skipped_keywords:
+        try:
+            mark_keywords_used(skipped_keywords)
+            log(f"풀 제외 ({len(skipped_keywords)}개): {skipped_keywords}", "info")
+        except Exception as e:
+            log(f"키워드 풀 제외 실패 ({e})", "warn")
 
     if not collected:
         log("수집된 상품 없음", "warn")
@@ -85,6 +95,7 @@ def run(count_per_keyword: int = 10) -> None:
 
     published = 0
     published_keywords = []
+    last_url = ""
     try:
         for keyword, products in collected:
             title, content, _excerpt, _slug = build_content(keyword, products)
@@ -103,6 +114,7 @@ def run(count_per_keyword: int = 10) -> None:
                 published_keywords.append(keyword)
                 log(f"발행 완료: {result.url}", "ok")
                 if result.url:
+                    last_url = result.url
                     from common.publish_queue import add_url as _add_url
                     _add_url(result.url, platform="tistory", title=title)
             else:
@@ -122,6 +134,7 @@ def run(count_per_keyword: int = 10) -> None:
     notify_pipeline_result(
         "알리→티스토리", published, total,
         details=f"키워드: {', '.join(published_keywords)}" if published_keywords else "",
+        url=last_url,
     )
 
 
