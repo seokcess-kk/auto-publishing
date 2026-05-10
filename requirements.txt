@@ -40,3 +40,7 @@ markdown>=3.5
 
 # 카드 이미지 생성 (인스타그램 인포그래픽)
 Pillow>=10.0.0
+
+# 운영 대시보드 (tools/dashboard.py — 선택)
+streamlit>=1.30.0
+pandas>=2.0.0
