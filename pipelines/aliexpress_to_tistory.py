@@ -33,26 +33,36 @@ SCHEDULE = {
 }
 
 
-def run(count_per_keyword: int = 10) -> None:
+def run(count_per_keyword: int = 10,
+        keyword: "str | None" = None) -> None:
     """알리 크롤링 → 티스토리 발행.
 
     ⚠️ 순서 주의: AliexpressSource 와 TistoryPublisher 가 모두 sync_playwright
     를 쓰므로 동시 사용 시 'Playwright Sync API inside the asyncio loop'
     충돌. 상품 수집을 모두 끝낸 뒤 source.close() → publisher.login() 순서로
     sync_playwright 인스턴스를 직렬화한다.
+
+    Args:
+        count_per_keyword: 1글당 상품 수
+        keyword:           강제 키워드 1개 (지정 시 풀 우회)
     """
     from sources.itemscout_keywords import mark_keywords_used, get_pool_status
 
     blog_name = resolve_blog_name("aliexpress")
     log(f"[알리→티스토리] 시작 (blog={blog_name})", "step")
-    log(get_pool_status(), "info")
 
     # 1) 알리 source 로 상품 먼저 수집 (publisher 로그인 전에)
     tracking_id = os.getenv("ALIEXPRESS_TRACKING_ID", "wordpress")
     source = AliexpressSource(tracking_id=tracking_id)
 
-    post_count = int(os.getenv("ALIEXPRESS_POST_COUNT", "1"))
-    keywords   = get_keywords(n=post_count)
+    if keyword:
+        keywords = [keyword]
+        post_count = 1
+        log(f"단일 키워드 모드: {keyword}", "info")
+    else:
+        log(get_pool_status(), "info")
+        post_count = int(os.getenv("ALIEXPRESS_POST_COUNT", "1"))
+        keywords   = get_keywords(n=post_count)
 
     # collected: [(keyword, products), ...]
     collected: list[tuple[str, list]] = []
@@ -154,8 +164,13 @@ def _close_pub(pub) -> None:
 
 if __name__ == "__main__":
     count = int(os.getenv("ALIEXPRESS_PRODUCT_COUNT", "10"))
+    forced_keyword: "str | None" = None
     if "--count" in sys.argv:
         idx = sys.argv.index("--count")
         if idx + 1 < len(sys.argv):
             count = int(sys.argv[idx + 1])
-    run(count_per_keyword=count)
+    if "--keyword" in sys.argv:
+        idx = sys.argv.index("--keyword")
+        if idx + 1 < len(sys.argv):
+            forced_keyword = sys.argv[idx + 1]
+    run(count_per_keyword=count, keyword=forced_keyword)
