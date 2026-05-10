@@ -147,6 +147,83 @@ def mark_done_bulk(urls: list, field: str,
     return count
 
 
+def mark_status(url: str, field: str, status: str, message: str = "",
+                 queue_path: str = DEFAULT_QUEUE_PATH) -> bool:
+    """URL 의 field 에 상세 상태 저장. dashboard 에서 실패 원인 표시용.
+
+    field 자체는 'X'/'O' 로 유지하되, 별도 메타 컬럼 (`{field}_status`,
+    `{field}_message`) 을 추가해 사유를 보존. 'O' 가 아닌 응답은 모두
+    실패로 간주하고 status (no_permission/limit/error) + message 기록.
+
+    Returns:
+        변경 여부
+    """
+    if field not in _FIELDS:
+        raise ValueError(f"알 수 없는 field: {field}")
+    data = _load(queue_path)
+    changed = False
+    for item in data:
+        if item["url"] != url:
+            continue
+        if status == "ok":
+            if item.get(field) != "O":
+                item[field] = "O"
+                changed = True
+        # 상세 상태/사유는 항상 갱신 (성공/실패 구분 없이 추적)
+        if item.get(f"{field}_status") != status:
+            item[f"{field}_status"] = status
+            changed = True
+        if message and item.get(f"{field}_message", "") != message[:200]:
+            item[f"{field}_message"] = message[:200]
+            changed = True
+        break
+    if changed:
+        _save(data, queue_path)
+    return changed
+
+
+def mark_status_bulk(results: dict, field: str,
+                      queue_path: str = DEFAULT_QUEUE_PATH) -> int:
+    """여러 URL 의 field 상태/사유를 한 번에 갱신.
+
+    Args:
+        results: {url: status} 또는 {url: (status, message)} dict
+                 status 가 'ok' 면 field='O', 그 외는 'X' 유지 + 상세 저장
+
+    Returns:
+        변경 건수
+    """
+    if field not in _FIELDS:
+        raise ValueError(f"알 수 없는 field: {field}")
+    data = _load(queue_path)
+    count = 0
+    for item in data:
+        url = item.get("url", "")
+        if url not in results:
+            continue
+        v = results[url]
+        if isinstance(v, tuple):
+            status, message = v[0], v[1] if len(v) > 1 else ""
+        else:
+            status, message = v, ""
+        item_changed = False
+        if status == "ok":
+            if item.get(field) != "O":
+                item[field] = "O"
+                item_changed = True
+        if item.get(f"{field}_status") != status:
+            item[f"{field}_status"] = status
+            item_changed = True
+        if message and item.get(f"{field}_message", "") != message[:200]:
+            item[f"{field}_message"] = message[:200]
+            item_changed = True
+        if item_changed:
+            count += 1
+    if count:
+        _save(data, queue_path)
+    return count
+
+
 def get_newly_indexed_today(queue_path: str = DEFAULT_QUEUE_PATH) -> list:
     """오늘 날짜에 queued_at이 기록되어 있고 google_indexed="O"인 항목 반환.
 

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from common.logger import log
-from common.publish_queue import get_pending, mark_done_bulk, stats
+from common.publish_queue import get_pending, mark_done_bulk, mark_status_bulk, stats
 from common.notifier import notify_pipeline_result
 
 
@@ -30,7 +30,11 @@ SCHEDULE = {
 
 
 def _submit_google(pending: list) -> list:
-    """Google 색인 제출. 성공한 URL 목록 반환."""
+    """Google 색인 제출. 성공한 URL 목록 반환.
+
+    실패 케이스(no_permission/limit/error)는 publish_queue 에 상세 상태로
+    저장되어 dashboard 에서 사유 노출.
+    """
     if not pending:
         log("[색인] Google 미제출 URL 없음", "info")
         return []
@@ -38,8 +42,9 @@ def _submit_google(pending: list) -> list:
         from common.indexing_google import submit_urls
         urls = [item["url"] for item in pending[:200]]
         results = submit_urls(urls)
+        # 모든 결과를 publish_queue 에 기록 (성공/실패 모두) — 사유 보존
+        mark_status_bulk(results, "google_indexed")
         ok = [u for u, s in results.items() if s == "ok"]
-        mark_done_bulk(ok, "google_indexed")
         log(f"[색인] Google: {len(ok)}/{len(urls)}건 성공", "step")
         return ok
     except Exception as e:
@@ -56,8 +61,8 @@ def _submit_naver(pending: list) -> list:
         from common.indexing_naver import submit_urls
         urls = [item["url"] for item in pending[:50]]
         results = submit_urls(urls)
+        mark_status_bulk(results, "naver_indexed")
         ok = [u for u, s in results.items() if s == "ok"]
-        mark_done_bulk(ok, "naver_indexed")
         log(f"[색인] Naver: {len(ok)}/{len(urls)}건 성공", "step")
         return ok
     except Exception as e:
