@@ -8,15 +8,18 @@ WordPress/Tistory/Blogger URL 수집 모듈 (백링크 소스)
        GET {WP_URL}/wp-sitemap.xml            (WordPress Core)
   2) WordPress REST API 최신 글
        GET {WP_URL}/wp-json/wp/v2/posts?per_page=100&page=N
+  3) Tistory RSS — 워드프레스 sitemap 형식이 아니라 RSS 만 제공
+       GET {SITE}/rss   → 최근 50건 (제목 포함)
 
 반환 스키마:
-  [{"url": str, "title": str, "published": str|None, "source": "sitemap|rest"}]
+  [{"url": str, "title": str, "published": str|None, "source": "sitemap|rest|tistory_rss"}]
 
 참조:
   wordpress_twitter_auto_backlink/ch05_semi_final/
   00.Old_Source/backlink/backlink_tistory_wordpress_naver_link_upload_ver8.py
 """
 import re
+import xml.etree.ElementTree as ET
 from typing import Iterable, Optional
 
 import requests
@@ -142,6 +145,42 @@ def fetch_wp_rest_posts(base_url: str, per_page: int = 100,
     return records
 
 
+# ─── Tistory RSS ──────────────────────────────────────────────────────────────
+
+def fetch_tistory_rss(base_url: str) -> list:
+    """티스토리 RSS — /rss 엔드포인트에서 최근 글 50개 추출.
+
+    티스토리는 워드프레스 sitemap 형식이 아니므로 RSS 만 동작.
+    item 의 title/link 를 그대로 가져온다.
+    """
+    base = _normalize_base(base_url)
+    resp = _http_get(f"{base}/rss")
+    if not resp or resp.status_code != 200:
+        return []
+
+    records = []
+    try:
+        # RSS XML 의 BOM/네임스페이스 잡음 회피 — bytes 로 파싱
+        root = ET.fromstring(resp.content)
+    except ET.ParseError:
+        return []
+
+    for item in root.iter("item"):
+        link_el  = item.find("link")
+        title_el = item.find("title")
+        date_el  = item.find("pubDate")
+        url = (link_el.text or "").strip() if link_el is not None else ""
+        if not url:
+            continue
+        records.append({
+            "url":       url,
+            "title":     (title_el.text or "").strip() if title_el is not None else "",
+            "published": (date_el.text  or "").strip() if date_el  is not None else None,
+            "source":    "tistory_rss",
+        })
+    return records
+
+
 # ─── 통합 수집 진입점 ──────────────────────────────────────────────────────────
 
 def collect_backlink_urls(base_urls: Iterable[str],
@@ -194,6 +233,15 @@ def collect_backlink_urls(base_urls: Iterable[str],
 
         if "rest" in strategies:
             for rec in fetch_wp_rest_posts(base, max_pages=rest_max_pages):
+                u = rec["url"]
+                if u and u not in seen:
+                    seen.add(u)
+                    rec["site"] = base
+                    collected.append(rec)
+                    site_count += 1
+
+        if "tistory_rss" in strategies:
+            for rec in fetch_tistory_rss(base):
                 u = rec["url"]
                 if u and u not in seen:
                     seen.add(u)
