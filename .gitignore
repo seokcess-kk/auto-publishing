@@ -19,6 +19,11 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
+
+# 런타임 / 백업 (시크릿/세션 포함 가능)
+.runtime/
+backups/
 
 # GitHub Pages 레포 (별도 git 관리)
 daechanlife81.github.io/

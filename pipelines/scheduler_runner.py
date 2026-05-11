@@ -138,12 +138,20 @@ def main() -> None:
 
     from common.notifier import notify_scheduler_start
     notify_scheduler_start(registered)
+
+    from common.heartbeat import write as _hb_write, clear as _hb_clear
+    from datetime import datetime
+    started_at = datetime.now().isoformat(timespec="seconds")
+
     try:
         while True:
+            _hb_write(os.getpid(), registered, started_at)
             schedule.run_pending()
             time.sleep(30)
     except KeyboardInterrupt:
         log("스케줄러 종료", "warn")
+    finally:
+        _hb_clear()
 
 
 if __name__ == "__main__":

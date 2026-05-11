@@ -892,6 +892,7 @@ class NaverBlogPublisher(Publisher):
         data = {
             "blogId": self.blog_id,
             "documentModel": document_model,
+            "mediaResources": '{"image":[],"video":[],"file":[]}',
             "populationParams": population_params,
             "productApiVersion": "v1",
         }

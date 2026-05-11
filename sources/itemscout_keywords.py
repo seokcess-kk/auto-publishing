@@ -294,25 +294,87 @@ def collect_all_keywords(max_per_category: int = 500,
 
 # ─── 풀에서 키워드 꺼내기 ────────────────────────────────────────────────────
 
-def _trend_weight(item: dict) -> float:
-    """Pandarank rank_change 와 source 에 따라 가중치 계산.
+_ROI_CACHE = {"data": None, "loaded_at": 0.0}
 
-    rank_change=up   → 3.0 (트렌드 상승, 우선 발행)
-    rank_change=new  → 2.5 (신규 진입 — up 보다 약간 낮춰 노이즈 완화)
-    rank_change=keep → 1.5 (변동 없음, 약간 가산)
-    rank_change=down → 0.7 (하락, 약간 감점)
-    rank_change 없음 → 1.0 (기본 — ItemScout/DataLab)
+
+def _load_roi_db() -> dict:
+    """data/keyword_roi.json 를 5분 메모리 캐시로 로드."""
+    import time as _time
+    now = _time.time()
+    if _ROI_CACHE["data"] is not None and now - _ROI_CACHE["loaded_at"] < 300:
+        return _ROI_CACHE["data"]
+
+    roi_path = os.path.join(_BASE_DIR, "data", "keyword_roi.json")
+    db = _load_json(roi_path, {})
+    _ROI_CACHE["data"] = db
+    _ROI_CACHE["loaded_at"] = now
+    return db
+
+
+def _roi_multiplier(keyword: str, roi_db: dict | None = None) -> float:
+    """ROI 실적 기반 multiplier.
+
+    수수료 발생 → 큰 보너스 (지수 분포로 상한 3.0)
+    클릭만 발생 → 작은 보너스 1.2
+    3회 이상 발행했는데 클릭 0 → 페널티 0.5
+    그 외 (신규 키워드 등) → 1.0
+    """
+    if not keyword:
+        return 1.0
+    if roi_db is None:
+        roi_db = _load_roi_db()
+
+    rec = roi_db.get(keyword)
+    if not rec:
+        return 1.0
+
+    commission = rec.get("commission", 0) or 0
+    clicks     = rec.get("clicks", 0) or 0
+    publishes  = rec.get("publishes", 0) or 0
+
+    if commission > 0:
+        # 1000원당 +0.5, 상한 3.0 (수수료 5000원이면 3.0)
+        return min(3.0, 1.5 + commission / 1000 * 0.5)
+
+    if clicks > 0:
+        return 1.2
+
+    if publishes >= 3 and clicks == 0:
+        return 0.5  # 3번 발행했는데 클릭 0 — 저성과 키워드
+
+    return 1.0
+
+
+def _trend_weight(item: dict, roi_db: dict | None = None) -> float:
+    """Pandarank rank_change + ROI 실적에 따른 가중치.
+
+    base: rank_change 기반
+        rank_change=up   → 3.0 (트렌드 상승, 우선 발행)
+        rank_change=new  → 2.5 (신규 진입 — up 보다 약간 낮춰 노이즈 완화)
+        rank_change=keep → 1.5 (변동 없음, 약간 가산)
+        rank_change=down → 0.7 (하락, 약간 감점)
+        rank_change 없음 → 1.0 (기본 — ItemScout/DataLab)
+
+    * ROI multiplier (수수료/클릭 실적 반영, 신규 키워드는 1.0)
+
+    .env 의 KEYWORD_ROI_WEIGHT=false 로 ROI 반영 비활성 가능.
     """
     rc = (item.get("rank_change") or "").lower()
     if rc == "up":
-        return 3.0
-    if rc == "new":
-        return 2.5
-    if rc == "keep":
-        return 1.5
-    if rc == "down":
-        return 0.7
-    return 1.0
+        base = 3.0
+    elif rc == "new":
+        base = 2.5
+    elif rc == "keep":
+        base = 1.5
+    elif rc == "down":
+        base = 0.7
+    else:
+        base = 1.0
+
+    if os.getenv("KEYWORD_ROI_WEIGHT", "true").lower() != "true":
+        return base
+
+    return base * _roi_multiplier(item.get("keyword", ""), roi_db)
 
 
 _RC_PRIORITY = {"up": 0, "new": 1, "keep": 2, "": 3, "down": 4}
@@ -438,11 +500,18 @@ def get_next_keywords(n: int = 3,
     top_pool = _build_top_pool(available, size=100)
 
     if prefer_trending:
-        weights = [_trend_weight(it) for it in top_pool]
+        # ROI db 한 번만 로드해 weight 계산 비용 최소화
+        _roi = _load_roi_db()
+        weights = [_trend_weight(it, _roi) for it in top_pool]
         trend_hot = sum(1 for w in weights if w >= 2.5)
+        roi_boosted = sum(
+            1 for it in top_pool
+            if _roi_multiplier(it.get("keyword", ""), _roi) > 1.0
+        )
         selected = _weighted_sample(top_pool, n, weights)
         keywords = [item["keyword"] for item in selected]
-        log(f"키워드 선택 (trend-weighted, up/new={trend_hot}): {keywords} (잔여 {len(available)}개)", "ok")
+        log(f"키워드 선택 (trend-weighted, up/new={trend_hot}, "
+            f"roi+={roi_boosted}): {keywords} (잔여 {len(available)}개)", "ok")
     else:
         # 기존 동작: 균등 랜덤
         selected = random.sample(top_pool, min(n, len(top_pool)))

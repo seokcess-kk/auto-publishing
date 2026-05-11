@@ -71,6 +71,32 @@ def _index_status(queue: list, today_iso: str) -> dict:
     }
 
 
+def _slot_performance(queue: list, today_iso: str) -> list[dict]:
+    """오늘 발행분을 시각(HH) 단위로 묶어 발행수/색인율 집계.
+
+    Returns:
+        [{"hour": "07", "n": 3, "google": 2, "naver": 1, "back": 0}, ...]
+        n 이 많은 슬롯부터 정렬.
+    """
+    buckets: dict[str, dict] = {}
+    for it in queue:
+        qa = it.get("queued_at") or ""
+        if not qa.startswith(today_iso):
+            continue
+        # ISO: 2026-05-11T14:30:00 → "14"
+        try:
+            hh = qa.split("T")[1][:2]
+        except IndexError:
+            continue
+        b = buckets.setdefault(hh, {"hour": hh, "n": 0, "google": 0,
+                                    "naver": 0, "back": 0})
+        b["n"]      += 1
+        b["google"] += 1 if it.get("google_indexed") == "O" else 0
+        b["naver"]  += 1 if it.get("naver_indexed") == "O" else 0
+        b["back"]   += 1 if it.get("backlinked") == "O" else 0
+    return sorted(buckets.values(), key=lambda r: (-r["n"], r["hour"]))
+
+
 def _yesterday_roi_summary(roi: dict) -> dict:
     """어제 last 갱신된 키워드 합계."""
     yesterday_iso = (date.today() - timedelta(days=1)).isoformat()
@@ -175,7 +201,27 @@ def build_summary() -> str:
             f"수수료 {yroi['commission']:,}원"
         )
 
-    # 5) 다음 스케줄 (3개)
+    # 4-2) 시간대별 성과 (오늘 발행 기준, 상위 3슬롯)
+    slot_rows = _slot_performance(queue, today_iso)
+    if slot_rows:
+        lines.append("• 슬롯 성과:")
+        for r in slot_rows[:3]:
+            lines.append(
+                f"  └ {r['hour']}시: {r['n']}건 "
+                f"(G {r['google']} · N {r['naver']} · BL {r['back']})"
+            )
+
+    # 5) 영속 프로필 만료 경고 (D-7 이내만 표시)
+    try:
+        from common.session_health import build_warning_lines
+        warn_lines = build_warning_lines()
+        if warn_lines:
+            lines.append("• 세션 경고:")
+            lines.extend(warn_lines)
+    except Exception as e:
+        log(f"세션 점검 실패 (무시): {e}", "warn")
+
+    # 6) 다음 스케줄 (3개)
     nx = _next_schedule_runs(top_n=3)
     if nx:
         lines.append("• 다음 실행:")
