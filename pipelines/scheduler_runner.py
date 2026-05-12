@@ -32,6 +32,9 @@ scheduler_runner 는 pipelines/ 의 모든 모듈을 import 해 SCHEDULE 을 자
 import importlib
 import os
 import pkgutil
+import subprocess
+import sys
+import traceback
 import schedule
 import time
 from typing import Callable, Sequence, TypedDict
@@ -76,7 +79,7 @@ def _resolve_arg(spec: str) -> str | int | float:
 
 
 def _register(times_env: str, func: Callable, *args, **kwargs) -> int:
-    """환경변수로 지정된 시간에 func 등록. 등록 수 반환."""
+    """환경변수로 지정된 시간에 func 등록 (in-process). 등록 수 반환."""
     times_str = os.getenv(times_env, "")
     if not times_str:
         return 0
@@ -86,6 +89,67 @@ def _register(times_env: str, func: Callable, *args, **kwargs) -> int:
         if t:
             schedule.every().day.at(t).do(_safe_call, func, *args, **kwargs)
             log(f"스케줄 등록: {func.__name__} @ {t}", "ok")
+            count += 1
+    return count
+
+
+def _safe_subprocess_call(module_name: str) -> None:
+    """파이프라인 모듈을 별도 python 프로세스로 실행.
+
+    playwright sync_playwright 인스턴스/persistent profile 잠금 등 누적 부작용은
+    매번 새 프로세스 → 격리로 차단. 종료 코드 != 0 이면 notify_error.
+
+    timeout: .env SCHEDULE_SUBPROCESS_TIMEOUT (기본 1800초/30분).
+    """
+    try:
+        timeout = int(os.getenv("SCHEDULE_SUBPROCESS_TIMEOUT", "1800"))
+    except ValueError:
+        timeout = 1800
+
+    log(f"실행 (subprocess): {module_name}", "step")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-u", "-m", module_name],
+            env=env, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"{module_name} timeout 초과 ({timeout}s) — 강제 종료됨", "error")
+        try:
+            from common.notifier import notify_error
+            notify_error(module_name, TimeoutError(f"subprocess timeout {timeout}s"))
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        log(f"{module_name} subprocess 예외:\n{traceback.format_exc()}", "error")
+        try:
+            from common.notifier import notify_error
+            notify_error(module_name, e)
+        except Exception:
+            pass
+        return
+
+    if proc.returncode != 0:
+        log(f"{module_name} 비정상 종료 (exit={proc.returncode})", "error")
+        try:
+            from common.notifier import notify_error
+            notify_error(module_name, RuntimeError(f"exit code {proc.returncode}"))
+        except Exception:
+            pass
+
+
+def _register_module(times_env: str, module_name: str) -> int:
+    """파이프라인 모듈을 subprocess 로 실행하도록 등록. 자원 격리 목적."""
+    times_str = os.getenv(times_env, "")
+    if not times_str:
+        return 0
+    count = 0
+    for t in times_str.split(","):
+        t = t.strip()
+        if t:
+            schedule.every().day.at(t).do(_safe_subprocess_call, module_name)
+            log(f"스케줄 등록: {module_name} @ {t} (subprocess)", "ok")
             count += 1
     return count
 
@@ -111,21 +175,17 @@ def main() -> None:
 
     registered = 0
 
-    # 파이프라인 자동 발견
+    # 파이프라인 자동 발견 — subprocess 로 실행 (자원 격리)
     for mod, meta in _discover_schedules():
         func = getattr(mod, meta["func"], None)
         if not func:
             log(f"{mod.__name__}: SCHEDULE['func']={meta['func']} 함수 없음", "warn")
             continue
+        # args_from_env 는 모듈의 __main__ 블록이 직접 env 에서 읽으므로
+        # subprocess 가 그대로 환경변수 상속하면 동일하게 동작.
+        registered += _register_module(meta["env"], mod.__name__)
 
-        # 인자 해석 (env → 값)
-        args = []
-        for spec in meta.get("args_from_env", ()):
-            args.append(_resolve_arg(spec))
-
-        registered += _register(meta["env"], func, *args)
-
-    # 파이프라인 외 고정 작업
+    # 파이프라인 외 고정 작업 — playwright 안 쓰는 단순 토큰 갱신은 in-process
     from common.threads_token import refresh_long_lived_token
     registered += _register("SCHEDULE_THREADS_REFRESH", refresh_long_lived_token)
 

@@ -518,14 +518,21 @@ class AliexpressSource:
 
     def search(self, keyword: str, count: int = 10,
                require_affiliate: bool = True,
-               min_keyword_match: int = 1) -> list:
+               min_keyword_match: "int | None" = None) -> list:
         """검색 + 제휴링크 생성.
 
         min_keyword_match: 검색 결과 N개 중 상품명에 키워드 substring 매칭이
             이만큼 있어야 발행 가치 있음으로 판단. 미달 시 빈 결과 반환 —
             한국 고유명사 등 알리에 적합하지 않은 키워드의 잡상품 발행 차단.
-            0 으로 두면 검증 비활성.
+            0 으로 두면 검증 비활성. None 이면 ALIEXPRESS_MIN_KEYWORD_MATCH
+            환경변수(기본 0) 사용.
         """
+        if min_keyword_match is None:
+            try:
+                min_keyword_match = int(os.getenv("ALIEXPRESS_MIN_KEYWORD_MATCH", "0"))
+            except ValueError:
+                min_keyword_match = 0
+
         log(f"알리 검색 (tracking={self.tracking_id}): {keyword}", "step")
 
         products = self._search_products(keyword, count=count * 2)  # 여유분
