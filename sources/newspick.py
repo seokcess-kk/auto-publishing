@@ -463,52 +463,65 @@ class NewspickSource:
             log(f"Kakao 로그인 중 예외: {e}", "error")
             return False
 
-    def ensure_session(self) -> bool:
+    def ensure_session(self, max_attempts: int = 3) -> bool:
         """매 호출마다 persistent profile 로 Chromium 을 짧게 띄워 SESSION 을 재발급받는다.
 
         뉴스픽 SESSION 쿠키는 브라우저 종료 시 휘발되는 session-only 타입이라
         pickle 재사용이 불가능. 대신 persistent profile 에 저장된 Kakao 간편로그인
         토큰이 있으면 ID/PW 재입력 없이 1~3초 안에 /login → 대시보드로 자동 진입.
+
+        max_attempts: chromium startup race ('Target page closed') 에 한해 재시도.
+            3s 백오프. 자동 스케줄 시간대에 launch 직후 page 가 닫혀버리는 패턴 회복용.
         """
-        try:
-            with self.profile.launch(headless=True) as context:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with self.profile.launch(headless=True) as context:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
 
-                # 간편로그인 토큰으로 자동 리다이렉트 대기 (최대 8초)
-                deadline = time.time() + 8
-                while time.time() < deadline:
-                    if self._page_has_session(context, page):
-                        break
-                    time.sleep(0.5)
+                    # 간편로그인 토큰으로 자동 리다이렉트 대기 (최대 8초)
+                    deadline = time.time() + 8
+                    while time.time() < deadline:
+                        if self._page_has_session(context, page):
+                            break
+                        time.sleep(0.5)
 
-                if not self._page_has_session(context, page):
-                    # 토큰이 만료됐거나 최초 로그인 — Kakao SSO 전체 플로우 실행
-                    log("간편로그인 미적용 — Kakao SSO 자동 로그인 시도", "warn")
-                    if not self._kakao_login(context):
-                        log("Kakao SSO 로그인 실패", "error")
-                        return False
-
-                    # 재진입 확인
                     if not self._page_has_session(context, page):
-                        log("로그인은 성공했으나 SESSION 쿠키 미확보", "error")
-                        return False
+                        # 토큰이 만료됐거나 최초 로그인 — Kakao SSO 전체 플로우 실행
+                        log("간편로그인 미적용 — Kakao SSO 자동 로그인 시도", "warn")
+                        if not self._kakao_login(context):
+                            log("Kakao SSO 로그인 실패", "error")
+                            return False
 
-                # SESSION 확보 완료 → requests 에 쿠키 주입
-                injected = self._inject_cookies(context)
-                log(f"newspic 쿠키 주입 완료: {injected}개", "ok")
+                        # 재진입 확인
+                        if not self._page_has_session(context, page):
+                            log("로그인은 성공했으나 SESSION 쿠키 미확보", "error")
+                            return False
 
-            # 브라우저 종료 후 requests 단에서 API 검증
-            if self._check_session():
-                self.session_mgr.save()  # 다른 세션에서 참고 가능 (pickle)
-                log("뉴스픽 세션 유효", "ok")
-                return True
+                    # SESSION 확보 완료 → requests 에 쿠키 주입
+                    injected = self._inject_cookies(context)
+                    log(f"newspic 쿠키 주입 완료: {injected}개", "ok")
 
-            log("requests 쪽 세션 검증 실패", "error")
-            return False
-        except Exception as e:
-            log(f"ensure_session 예외: {e}", "error")
-            return False
+                # 브라우저 종료 후 requests 단에서 API 검증
+                if self._check_session():
+                    self.session_mgr.save()  # 다른 세션에서 참고 가능 (pickle)
+                    log("뉴스픽 세션 유효", "ok")
+                    return True
+
+                log("requests 쪽 세션 검증 실패", "error")
+                return False
+            except Exception as e:
+                msg = str(e)
+                transient = ("Target page" in msg or
+                             "browser has been closed" in msg)
+                if attempt < max_attempts and transient:
+                    log(f"ensure_session 시도 {attempt}/{max_attempts} — 3s 후 재시도: "
+                        f"{type(e).__name__}: {msg[:120]}", "warn")
+                    time.sleep(3)
+                    continue
+                log(f"ensure_session 예외: {e}", "error")
+                return False
+        return False
 
     def fetch(self, category: str = "메인", count: int = 10) -> list:
         """카테고리에서 콘텐츠 목록을 가져온다 (추천 + 일반).
