@@ -44,11 +44,19 @@ def resolve_blog_name(role: str) -> str:
     role_key = role.upper()
     env_name = f"TISTORY_BLOG_{role_key}"
 
+    # python-dotenv 는 따옴표 없는 unquoted 빈 값 뒤의 인라인 `# 코멘트` 를
+    # 값의 일부로 파싱한다 (예: `KEY=   # 설명` → `'   # 설명'`).
+    # .strip() 만 하면 `# 설명` 이 남아 truthy 가 되고 폴백이 막힌다.
+    # 운영 사고 방지를 위해 `#` 으로 시작하면 미설정으로 간주.
     blog = os.getenv(env_name, "").strip()
+    if blog.startswith("#"):
+        blog = ""
     if blog:
         return blog
 
     fallback = os.getenv("TISTORY_BLOG_NAME", "").strip()
+    if fallback.startswith("#"):
+        fallback = ""
     if fallback:
         log(f"[tistory_blogs] role='{role}' 매핑 없음 — TISTORY_BLOG_NAME 폴백", "warn")
         return fallback
