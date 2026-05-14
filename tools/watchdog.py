@@ -42,21 +42,27 @@ def _notify(msg: str) -> None:
 
 
 def _restart_scheduler() -> bool:
-    """백그라운드로 scheduler_runner 기동.
+    """AutoPublishing_Scheduler 작업을 Stop + Start 로 재기동.
 
-    scheduler_runner 자체가 시작 시 다른 인스턴스를 정리하는 singleton 가드를
-    가지므로 watchdog 은 별도 kill 없이 신규 인스턴스만 띄우면 된다.
-    가드 동작 안전성은 pipelines/scheduler_runner.py 의
-    _kill_other_scheduler_instances() 에 의존.
+    Start-Process 로 직접 python 을 띄우면 작업 스케줄러를 우회해 비-elevated
+    인스턴스가 만들어진다. 기존 인스턴스는 RunLevel=Highest 로 elevated 라
+    가드의 taskkill 가 'Access denied' 로 거부되어 중복 실행 사고가 재현된다.
+    Start-ScheduledTask 경로로 트리거하면:
+      - 권한 컨텍스트가 install_task_scheduler.ps1 의 RunLevel=Highest 일관
+      - MultipleInstances=IgnoreNew 가 중복 차단을 보장
+      - Stop-ScheduledTask 가 elevated 권한으로 잔존 인스턴스를 안전하게 종료
+    이 함수는 watchdog 작업 (RunLevel=Highest) 컨텍스트에서 호출되어야 정상 동작.
     """
+    task_name = os.getenv("WATCHDOG_TASK_NAME", "AutoPublishing_Scheduler")
     try:
         cmd = [
-            "powershell.exe", "-NoProfile", "-Command",
-            f"Start-Process -WindowStyle Hidden -WorkingDirectory '{_BASE_DIR}' "
-            f"-FilePath 'python' -ArgumentList '-m','pipelines.scheduler_runner'",
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            f"Stop-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; "
+            f"Start-Sleep -Seconds 2; "
+            f"Start-ScheduledTask -TaskName '{task_name}'",
         ]
-        subprocess.run(cmd, check=True, timeout=15)
-        log("scheduler_runner 백그라운드 재기동 완료", "ok")
+        subprocess.run(cmd, check=True, timeout=30)
+        log(f"scheduler_runner 재기동 완료 (Task: {task_name})", "ok")
         return True
     except Exception as e:
         log(f"재기동 실패: {e}", "error")

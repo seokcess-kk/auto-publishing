@@ -81,7 +81,8 @@ $schedSettings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 5) `
-    -ExecutionTimeLimit (New-TimeSpan -Days 365)
+    -ExecutionTimeLimit (New-TimeSpan -Days 365) `
+    -MultipleInstances IgnoreNew
 
 $schedPrincipal = New-ScheduledTaskPrincipal `
     -UserId $env:USERNAME `
@@ -121,7 +122,8 @@ $wdSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 3) `
+    -MultipleInstances IgnoreNew
 
 if (Get-ScheduledTask -TaskName $watchdogName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $watchdogName -Confirm:$false

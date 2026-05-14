@@ -240,22 +240,49 @@ def _kill_other_scheduler_instances() -> int:
         return 0
 
     # 종료 — Windows: taskkill /F, POSIX: SIGTERM
-    actually_killed = []
+    # taskkill 의 'Access is denied' 같은 권한 거부 케이스가 silent 하게 통과하면
+    # 잔존 인스턴스를 인지 못한 채 둘이 함께 돌게 된다 (= 중복 발행 사고).
+    # 그래서 실패한 PID 도 별도로 추적해 운영자에게 알림.
+    actually_killed: list[int] = []
+    failed_kills: list[tuple[int, str]] = []
     for pid in sorted(killed_pids):
         try:
             if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                               capture_output=True, timeout=5)
+                proc = subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if proc.returncode == 0:
+                    actually_killed.append(pid)
+                else:
+                    reason = (proc.stderr or proc.stdout or "rc=" + str(proc.returncode)).strip()
+                    failed_kills.append((pid, reason))
             else:
                 os.kill(pid, _signal.SIGTERM)
-            actually_killed.append(pid)
-        except Exception:
-            pass
+                actually_killed.append(pid)
+        except Exception as e:
+            failed_kills.append((pid, str(e)))
 
     if actually_killed:
         log(f"기존 scheduler 인스턴스 {len(actually_killed)}개 정리: "
             f"PID {', '.join(map(str, actually_killed))}", "warn")
         time.sleep(2)  # OS 가 리소스 해제할 시간
+
+    if failed_kills:
+        detail = "; ".join(f"PID {p}: {r[:80]}" for p, r in failed_kills)
+        msg = (
+            f"🚨 [Scheduler] 잔존 인스턴스 정리 실패 — 중복 실행 위험\n"
+            f"• 실패: {detail}\n"
+            f"• 원인 추정: 권한 컨텍스트 불일치 (elevated 인스턴스를 비-elevated 가드가 못 죽임)\n"
+            f"• 권장: 본 프로세스를 즉시 종료하고 Task Scheduler 경로로 재기동"
+        )
+        log(msg, "error")
+        try:
+            from common.notifier import _send_telegram
+            _send_telegram(msg)
+        except Exception:
+            pass
+
     return len(actually_killed)
 
 
