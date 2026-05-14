@@ -109,9 +109,13 @@ def _safe_subprocess_call(module_name: str) -> None:
     log(f"실행 (subprocess): {module_name}", "step")
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     try:
+        # stdin=DEVNULL: 스케줄러가 TTY 에서 실행 중일 때 자식이 부모의 isatty 를
+        # 상속해 _is_interactive()=True 로 오판하는 걸 차단. 무인 실행에서 manual
+        # login 모드 진입 후 5분 timeout 으로 빠지던 문제 차단용.
         proc = subprocess.run(
             [sys.executable, "-u", "-m", module_name],
             env=env, timeout=timeout, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         log(f"{module_name} timeout 초과 ({timeout}s) — 강제 종료됨", "error")
@@ -170,8 +174,96 @@ def _discover_schedules():
             yield mod, meta
 
 
+def _kill_other_scheduler_instances() -> int:
+    """singleton 가드 — 다른 scheduler_runner 프로세스를 찾아 강제 종료.
+
+    watchdog 가 기존 스케줄러를 죽이지 않고 새 인스턴스를 띄우는 결함으로 인해
+    여러 스케줄러가 공존하면 동일 시각에 같은 파이프라인이 N회 실행되어
+    daily_summary 가 N번 발송되고 키워드 풀이 다중 소모되는 사고가 발생.
+    매 기동 시 본 가드가 잔존 인스턴스를 정리한다.
+
+    탐지 경로 2가지 (둘 다 시도):
+      (a) heartbeat 파일에 기록된 PID — 항상 정확 (자신이 직전 인스턴스로부터 인계)
+      (b) cmdline 매칭 — Windows WMI 가 cmdline 을 노출하는 경우. 권한/서비스 등
+          이유로 비공개일 수도 있으므로 (a) 와 병용.
+
+    Returns: 종료시킨 프로세스 수
+    """
+    import signal as _signal
+
+    my_pid = os.getpid()
+    killed_pids: set[int] = set()
+
+    # (a) heartbeat 의 PID — 거의 항상 실제 스케줄러
+    try:
+        from common.heartbeat import read as _hb_read
+        hb = _hb_read()
+        if hb:
+            hb_pid = int(hb.get("pid", 0) or 0)
+            if hb_pid and hb_pid != my_pid:
+                killed_pids.add(hb_pid)
+    except Exception:
+        pass
+
+    # (b) cmdline 매칭
+    marker = "pipelines.scheduler_runner"
+    if sys.platform == "win32":
+        try:
+            ps_cmd = (
+                "Get-CimInstance Win32_Process | "
+                f"Where-Object {{ $_.Name -eq 'python.exe' -and $_.CommandLine -like '*{marker}*' "
+                f"-and $_.ProcessId -ne {my_pid} }} | "
+                "ForEach-Object { $_.ProcessId }"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=10,
+            )
+            for s in result.stdout.splitlines():
+                s = s.strip()
+                if s.isdigit():
+                    killed_pids.add(int(s))
+        except Exception as e:
+            log(f"singleton 가드 PowerShell 예외(무시): {e}", "warn")
+    else:
+        try:
+            res = subprocess.run(
+                ["pgrep", "-f", marker], capture_output=True, text=True, timeout=5,
+            )
+            for s in res.stdout.split():
+                if s.isdigit() and int(s) != my_pid:
+                    killed_pids.add(int(s))
+        except Exception as e:
+            log(f"singleton 가드 pgrep 예외(무시): {e}", "warn")
+
+    if not killed_pids:
+        return 0
+
+    # 종료 — Windows: taskkill /F, POSIX: SIGTERM
+    actually_killed = []
+    for pid in sorted(killed_pids):
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                               capture_output=True, timeout=5)
+            else:
+                os.kill(pid, _signal.SIGTERM)
+            actually_killed.append(pid)
+        except Exception:
+            pass
+
+    if actually_killed:
+        log(f"기존 scheduler 인스턴스 {len(actually_killed)}개 정리: "
+            f"PID {', '.join(map(str, actually_killed))}", "warn")
+        time.sleep(2)  # OS 가 리소스 해제할 시간
+    return len(actually_killed)
+
+
 def main() -> None:
     log("=== 스케줄러 시작 ===", "step")
+
+    # 다른 scheduler_runner 인스턴스가 떠있으면 즉시 정리 — 중복 발행 방지
+    _kill_other_scheduler_instances()
 
     registered = 0
 

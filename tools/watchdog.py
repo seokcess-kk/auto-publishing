@@ -42,9 +42,14 @@ def _notify(msg: str) -> None:
 
 
 def _restart_scheduler() -> bool:
-    """백그라운드로 scheduler_runner 기동. PowerShell Start-Process 사용."""
+    """백그라운드로 scheduler_runner 기동.
+
+    scheduler_runner 자체가 시작 시 다른 인스턴스를 정리하는 singleton 가드를
+    가지므로 watchdog 은 별도 kill 없이 신규 인스턴스만 띄우면 된다.
+    가드 동작 안전성은 pipelines/scheduler_runner.py 의
+    _kill_other_scheduler_instances() 에 의존.
+    """
     try:
-        # pythonw 가 있으면 콘솔 없는 백그라운드, 없으면 python (DETACHED).
         cmd = [
             "powershell.exe", "-NoProfile", "-Command",
             f"Start-Process -WindowStyle Hidden -WorkingDirectory '{_BASE_DIR}' "
