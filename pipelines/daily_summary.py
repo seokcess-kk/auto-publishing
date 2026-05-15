@@ -110,14 +110,18 @@ def _yesterday_roi_summary(roi: dict) -> dict:
     }
 
 
-def _next_schedule_runs(top_n: int = 5) -> list:
-    """현재 .env 기준 등록 가능 스케줄 → 다음 실행 시각이 가까운 순."""
+def _enumerate_today_slots() -> list[dict]:
+    """오늘 등록된 슬롯들을 (module, time, scheduled_dt) 형태로 반환.
+
+    SCHEDULE_DAILY_SUMMARY 가 21:30 이고, 그 이전에 도래했어야 할 슬롯들만
+    검증 대상으로 본다 (아직 안 도래한 슬롯은 '미발행' 이 아니라 '예정').
+    """
     import importlib
     import pkgutil
     import pipelines as _pkg
 
     rows = []
-    now = datetime.now()
+    today = datetime.now().date()
     for _, name, _ in pkgutil.iter_modules(_pkg.__path__):
         if name.startswith("_") or name == "scheduler_runner":
             continue
@@ -137,18 +141,99 @@ def _next_schedule_runs(top_n: int = 5) -> list:
                     h, mn = map(int, t.split(":"))
                 except ValueError:
                     continue
-                run_at = now.replace(hour=h, minute=mn, second=0, microsecond=0)
-                if run_at <= now:
-                    run_at = run_at + timedelta(days=1)
+                scheduled = datetime.combine(
+                    today, datetime.min.time()
+                ).replace(hour=h, minute=mn)
                 rows.append({
-                    "module": name,
-                    "time":   t,
-                    "next":   run_at,
+                    "module":    f"pipelines.{name}",
+                    "name":      name,
+                    "time":      t,
+                    "scheduled": scheduled,
                 })
         except Exception:
             pass
+    rows.sort(key=lambda r: (r["time"], r["name"]))
+    return rows
+
+
+def _next_schedule_runs(top_n: int = 5) -> list:
+    """현재 .env 기준 등록 가능 스케줄 → 다음 실행 시각이 가까운 순."""
+    now = datetime.now()
+    rows = []
+    for r in _enumerate_today_slots():
+        nxt = r["scheduled"]
+        if nxt <= now:
+            nxt = nxt + timedelta(days=1)
+        rows.append({"module": r["name"], "time": r["time"], "next": nxt})
     rows.sort(key=lambda r: r["next"])
     return rows[:top_n]
+
+
+def _validate_slots(now: datetime | None = None) -> dict:
+    """오늘 도래한 슬롯들을 run_ledger 와 cross-reference 해 분류.
+
+    Returns:
+        {
+            "due":      [...],   # 오늘 도래한 슬롯 전체
+            "success":  [...],   # 정상 종료 (exit_code=0)
+            "failure":  [(slot, diagnosis), ...],
+            "missing":  [...],   # ledger 에 기록조차 없음 (스케줄러 못 띄움 의심)
+            "pending":  [...],   # 아직 도래 전 (요약 시점 이후)
+        }
+    """
+    from common.run_ledger import list_today
+    from common.run_diagnosis import diagnose
+
+    now = now or datetime.now()
+    all_slots = _enumerate_today_slots()
+    due = [s for s in all_slots if s["scheduled"] <= now]
+    pending = [s for s in all_slots if s["scheduled"] > now]
+
+    # 모듈별 오늘 ledger record 들을 묶어둔다 (한 모듈이 하루 여러 슬롯이면
+    # 시각으로 가장 가까운 record 매칭).
+    by_module: dict[str, list[dict]] = {}
+    for rec in list_today():
+        by_module.setdefault(rec.get("module", ""), []).append(rec)
+
+    success: list[dict] = []
+    failure: list[tuple[dict, "object"]] = []
+    missing: list[dict] = []
+
+    for slot in due:
+        records = by_module.get(slot["module"], [])
+        # 슬롯 시각과 가장 가까운 (start ≥ scheduled - 10분) record 매칭
+        match = None
+        for r in records:
+            try:
+                started = datetime.fromisoformat(r["started_at"])
+            except Exception:
+                continue
+            if started >= slot["scheduled"] - timedelta(minutes=10):
+                if match is None:
+                    match = r
+                else:
+                    try:
+                        m_started = datetime.fromisoformat(match["started_at"])
+                        if abs((started - slot["scheduled"]).total_seconds()) < \
+                           abs((m_started - slot["scheduled"]).total_seconds()):
+                            match = r
+                    except Exception:
+                        pass
+        if match is None:
+            missing.append(slot)
+            continue
+        if match.get("status") == "success":
+            success.append({**slot, "_rec": match})
+        else:
+            failure.append((slot, diagnose(match)))
+
+    return {
+        "due":     due,
+        "success": success,
+        "failure": failure,
+        "missing": missing,
+        "pending": pending,
+    }
 
 
 def build_summary() -> str:
@@ -211,7 +296,37 @@ def build_summary() -> str:
                 f"(G {r['google']} · N {r['naver']} · BL {r['back']})"
             )
 
-    # 5) 영속 프로필 만료 경고 (D-7 이내만 표시)
+    # 5) 슬롯 검증 — 오늘 도래한 슬롯이 ledger 에 정상 기록됐는지
+    try:
+        v = _validate_slots()
+        due_n  = len(v["due"])
+        ok_n   = len(v["success"])
+        fail_n = len(v["failure"])
+        miss_n = len(v["missing"])
+        if due_n:
+            lines.append(
+                f"• 슬롯 검증: 도래 {due_n} • 성공 {ok_n} • "
+                f"실패 {fail_n} • 미실행 {miss_n}"
+            )
+            # 실패 슬롯 — 원인까지 (최대 6건 까지만, 더 있으면 +N)
+            for slot, dx in v["failure"][:6]:
+                line = f"  ❌ {slot['time']} {slot['name']} — {dx.label}"
+                lines.append(line[:300])
+                if dx.hint:
+                    lines.append(f"     💡 {dx.hint}"[:300])
+            extra_fail = len(v["failure"]) - 6
+            if extra_fail > 0:
+                lines.append(f"     … 외 {extra_fail}건 실패")
+            # 미실행 슬롯 — 스케줄러 자체가 트리거 못 한 경우 (드물지만 중요)
+            for slot in v["missing"][:6]:
+                lines.append(f"  🚫 {slot['time']} {slot['name']} — 미실행 (ledger 기록 없음)")
+            extra_miss = len(v["missing"]) - 6
+            if extra_miss > 0:
+                lines.append(f"     … 외 {extra_miss}건 미실행")
+    except Exception as e:
+        log(f"슬롯 검증 실패 (무시): {e}", "warn")
+
+    # 6) 영속 프로필 만료 경고 (D-7 이내만 표시)
     try:
         from common.session_health import build_warning_lines
         warn_lines = build_warning_lines()

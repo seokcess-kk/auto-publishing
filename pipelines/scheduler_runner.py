@@ -99,6 +99,10 @@ def _safe_subprocess_call(module_name: str) -> None:
     playwright sync_playwright 인스턴스/persistent profile 잠금 등 누적 부작용은
     매번 새 프로세스 → 격리로 차단. 종료 코드 != 0 이면 notify_error.
 
+    매 실행은 common.run_ledger 에 기록되어 daily_summary 의 슬롯 검증/원인
+    진단 입력으로 쓰인다. stderr 는 capture 해 ledger 의 stderr_tail 에
+    저장한다 (Task Scheduler 환경에서는 어차피 stdout 이 어디에도 흐르지 않음).
+
     timeout: .env SCHEDULE_SUBPROCESS_TIMEOUT (기본 1800초/30분).
     """
     try:
@@ -106,19 +110,31 @@ def _safe_subprocess_call(module_name: str) -> None:
     except ValueError:
         timeout = 1800
 
+    from datetime import datetime as _dt
+    from common.run_ledger import append_run
+
     log(f"실행 (subprocess): {module_name}", "step")
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    started_at = _dt.now()
     try:
         # stdin=DEVNULL: 스케줄러가 TTY 에서 실행 중일 때 자식이 부모의 isatty 를
         # 상속해 _is_interactive()=True 로 오판하는 걸 차단. 무인 실행에서 manual
         # login 모드 진입 후 5분 timeout 으로 빠지던 문제 차단용.
+        # capture_output: stderr 마지막 N KB 를 ledger 에 저장하기 위함.
         proc = subprocess.run(
             [sys.executable, "-u", "-m", module_name],
             env=env, timeout=timeout, check=False,
             stdin=subprocess.DEVNULL,
+            capture_output=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         log(f"{module_name} timeout 초과 ({timeout}s) — 강제 종료됨", "error")
+        append_run(
+            module=module_name, started_at=started_at, finished_at=_dt.now(),
+            exit_code="timeout", status="timeout",
+            stderr_tail=getattr(e, "stderr", None),
+            error=f"subprocess timeout {timeout}s",
+        )
         try:
             from common.notifier import notify_error
             notify_error(module_name, TimeoutError(f"subprocess timeout {timeout}s"))
@@ -127,12 +143,24 @@ def _safe_subprocess_call(module_name: str) -> None:
         return
     except Exception as e:
         log(f"{module_name} subprocess 예외:\n{traceback.format_exc()}", "error")
+        append_run(
+            module=module_name, started_at=started_at, finished_at=_dt.now(),
+            exit_code="exception", status="exception",
+            stderr_tail=None, error=str(e),
+        )
         try:
             from common.notifier import notify_error
             notify_error(module_name, e)
         except Exception:
             pass
         return
+
+    status = "success" if proc.returncode == 0 else "failure"
+    append_run(
+        module=module_name, started_at=started_at, finished_at=_dt.now(),
+        exit_code=proc.returncode, status=status,
+        stderr_tail=proc.stderr,
+    )
 
     if proc.returncode != 0:
         log(f"{module_name} 비정상 종료 (exit={proc.returncode})", "error")
