@@ -12,6 +12,7 @@
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import unquote
 
 import requests
 
@@ -26,9 +27,12 @@ class RealestateSource:
     """청약홈 분양정보 API 래퍼 + 블로그 HTML 빌더."""
 
     def __init__(self, service_key: Optional[str] = None):
-        self.service_key = service_key or os.getenv("DATA_GO_KR_KEY", "")
-        if not self.service_key:
+        raw = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        if not raw:
             raise ValueError("DATA_GO_KR_KEY env 누락")
+        # Encoded 키 (`...%3D%3D`) 를 그대로 .env 에 넣으면 requests 가 한 번 더
+        # 인코딩해 401. unquote 로 디코딩해 두 형태 모두 흡수.
+        self.service_key = unquote(raw)
 
     # ─── 저수준 GET ──────────────────────────────────────────────────────────
     def _get(self, path: str, *, page: int = 1, per_page: int = 100) -> list[dict]:

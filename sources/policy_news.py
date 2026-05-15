@@ -7,6 +7,7 @@ End Point: https://apis.data.go.kr/1371000/policyNewsService
 """
 import os
 from typing import Optional
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 
 import requests
@@ -21,7 +22,10 @@ class PolicyNewsSource:
     """정책브리핑 정책뉴스 수집."""
 
     def __init__(self, service_key: Optional[str] = None):
-        self.service_key = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        # Encoded 키를 .env 에 넣으면 requests 가 이중 인코딩 → 401.
+        # unquote 로 디코딩해 두 형태 모두 흡수.
+        raw = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        self.service_key = unquote(raw)
 
     def get_news_list(self, num_rows: int = 20, page: int = 1) -> list[dict]:
         """정책뉴스 목록 조회.

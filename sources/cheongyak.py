@@ -7,6 +7,7 @@ Base URL: api.odcloud.kr/api
 """
 import os
 from typing import Optional
+from urllib.parse import unquote
 
 import requests
 
@@ -20,7 +21,10 @@ class CheongyakSource:
     """청약홈 분양정보 수집."""
 
     def __init__(self, service_key: Optional[str] = None):
-        self.service_key = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        # Encoded 키를 .env 에 넣으면 requests 가 이중 인코딩 → 401.
+        # unquote 로 디코딩해 두 형태 모두 흡수.
+        raw = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        self.service_key = unquote(raw)
 
     def get_apt_announcements(self, page: int = 1, per_page: int = 20) -> list[dict]:
         """APT 분양 공고 목록 조회.

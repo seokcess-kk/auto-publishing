@@ -8,6 +8,7 @@ End Point: https://apis.data.go.kr/B090041/openapi/service/RiseSetInfoService
 import os
 from typing import Optional
 from datetime import datetime
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 
 import requests
@@ -22,7 +23,11 @@ class RiseSetSource:
     """일출/일몰 시각 정보 수집."""
 
     def __init__(self, service_key: Optional[str] = None):
-        self.service_key = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        # data.go.kr 발급 페이지의 "Encoded" 키를 그대로 .env 에 붙여 넣으면
+        # requests 가 params 인코딩 시 `%` 를 한 번 더 인코딩해 401 이 난다.
+        # unquote 로 한 번 디코딩해서 두 형태 모두 흡수.
+        raw = service_key or os.getenv("DATA_GO_KR_KEY", "")
+        self.service_key = unquote(raw)
 
     def get_riseset_info(self, location: str = "서울",
                          loc_x: str = "126.9783882",
