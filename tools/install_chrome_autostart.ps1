@@ -11,6 +11,7 @@
 
 param([switch]$Uninstall)
 
+$projectDir = (Resolve-Path "$PSScriptRoot\..").Path
 $taskName = "AutoPublishing_Chrome"
 $chromeExe = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 
@@ -27,11 +28,14 @@ if (-not (Test-Path $chromeExe)) {
     exit 1
 }
 
-# 부팅 시 본인 평소 프로필로 Chrome 시작 — 백그라운드 모드 가정 (window 안 뜸)
-# --no-startup-window: 시작 시 창 안 띄움 (백그라운드만)
+# 로그온 시 PowerShell wrapper 를 거쳐 Chrome 시작.
+# wrapper 가 WScript.Shell.Run 으로 SW_SHOWMINNOACTIVE (= 7) 강제 — 부팅 시
+# 창 안 뜨고 background process 만 살아있음. Chrome 116+ 가 --start-minimized
+# 를 가끔 무시하던 회귀를 우회.
+$wrapper = Join-Path $projectDir "tools\chrome_background_launcher.ps1"
 $action = New-ScheduledTaskAction `
-    -Execute $chromeExe `
-    -Argument "--no-startup-window"
+    -Execute "powershell.exe" `
+    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$wrapper`""
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
