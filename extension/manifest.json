@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Auto Publishing — Tistory Bridge",
+  "version": "0.1.0",
+  "description": "로컬 bridge (localhost:5757) 에서 글을 받아 Tistory editor 에 자동 작성. 사용자는 DKAPTCHA 풀이만 담당.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "alarms",
+    "notifications",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://localhost:5757/*",
+    "https://*.tistory.com/*",
+    "https://dkaptcha.kakao.com/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.tistory.com/manage/newpost*"],
+      "js": ["main_world.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://*.tistory.com/manage/newpost*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://dkaptcha.kakao.com/*"],
+      "js": ["captcha_frame.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Auto Publishing"
+  }
+}

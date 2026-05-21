@@ -150,6 +150,10 @@ class ThreadsPublisher(Publisher):
         """Step 2: 컨테이너 발행.
 
         POST /v1.0/{user_id}/threads_publish
+
+        주의: 응답의 `id` 는 18자리 numeric ID 라 https://www.threads.net/t/<id>
+        형식 URL 로는 안 열린다 (404). 정식 URL 은 별도 fields=permalink GET
+        호출로 받아야 한다 (shortcode 또는 @username/post/<id> 형식).
         """
         url = f"{GRAPH_BASE}/{self.user_id}/threads_publish"
         params = {
@@ -158,16 +162,39 @@ class ThreadsPublisher(Publisher):
         }
         try:
             resp = requests.post(url, params=params, timeout=15)
-            if resp.ok:
-                post_id  = resp.json().get("id", "")
-                post_url = f"https://www.threads.net/t/{post_id}" if post_id else ""
-                log(f"Threads 발행 성공: {post_url}", "ok")
-                return PostResult(success=True, url=post_url, post_id=post_id)
-            log(f"Threads 발행 실패 ({resp.status_code}): {resp.text[:200]}", "error")
-            return PostResult(success=False, message=resp.text[:200])
+            if not resp.ok:
+                log(f"Threads 발행 실패 ({resp.status_code}): {resp.text[:200]}", "error")
+                return PostResult(success=False, message=resp.text[:200])
+
+            post_id = resp.json().get("id", "")
+            if not post_id:
+                return PostResult(success=False, message="threads_publish 응답에 id 없음")
+
+            # 정식 permalink 조회 — 안 되면 numeric URL 폴백 (불완전하지만 ID 보존)
+            post_url = self._fetch_permalink(post_id) or f"https://www.threads.net/t/{post_id}"
+            log(f"Threads 발행 성공: {post_url}", "ok")
+            return PostResult(success=True, url=post_url, post_id=post_id)
         except Exception as e:
             log(f"Threads 발행 예외: {e}", "error")
             return PostResult(success=False, message=str(e))
+
+    def _fetch_permalink(self, post_id: str) -> str:
+        """발행된 글의 정식 permalink 조회 (Threads Graph API)."""
+        try:
+            r = requests.get(
+                f"{GRAPH_BASE}/{post_id}",
+                params={"fields": "permalink", "access_token": self.access_token},
+                timeout=10,
+            )
+            if r.ok:
+                permalink = r.json().get("permalink", "")
+                if permalink:
+                    return permalink
+            else:
+                log(f"Threads permalink 조회 실패 [{r.status_code}]: {r.text[:200]}", "warn")
+        except Exception as e:
+            log(f"Threads permalink 조회 예외 (무시): {e}", "warn")
+        return ""
 
     # ------------------------------------------------------------------
     # 토큰 갱신 (장기 토큰은 60일 유효, 매달 갱신 필요)

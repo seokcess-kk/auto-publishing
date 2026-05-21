@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Auto Publishing</title>
+  <style>
+    body { width: 280px; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; padding: 12px; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; }
+    .status { font-size: 12px; color: #666; margin: 8px 0; padding: 8px; background: #f5f5f5; border-radius: 4px; }
+    .ok { color: #0a7d2a; }
+    .err { color: #c1272d; }
+    button { font-size: 12px; padding: 4px 10px; cursor: pointer; }
+    label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    input[type=checkbox] { transform: scale(1.2); }
+    code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Auto Publishing — Tistory Bridge</h1>
+  <div class="row">
+    <label>
+      <input type="checkbox" id="enabled" checked>
+      <span>활성 (자동 폴링)</span>
+    </label>
+    <button id="poll-now">지금 polling</button>
+  </div>
+  <div class="status" id="bridge">bridge 상태 확인 중...</div>
+  <div class="status" id="active">활성 작업 없음</div>
+  <div class="status" id="counts">큐 통계 로드 중...</div>
+  <div style="font-size:11px;color:#888;margin-top:8px;">
+    bridge: <code>localhost:5757</code><br>
+    실행: <code>python -m pipelines.tistory_bridge</code>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -194,8 +194,16 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
     finally:
         _maybe_close(publisher)
 
-    log(f"{cfg.name} 완료: {published}/{count}건 발행", "step")
-    # 모든 기사가 중복으로 건너뛴 경우 = 새 기사 없음 = 정상 종료
+    # bridge 모드 = 큐 등록만 한 것. 실제 발행 완료 텔레그램 알림은 bridge
+    # server 가 /done 받을 때 보낸다 — 파이프라인 단계 알림은 skip (false
+    # positive 방지).
+    is_bridge = "tistory" in cfg.name.lower() and \
+        os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
+    verb = "큐 등록" if is_bridge else "발행"
+    log(f"{cfg.name} 완료: {published}/{count}건 {verb}", "step")
+    if is_bridge and published > 0:
+        log(f"{cfg.name} bridge 모드 — 파이프라인 알림 skip (실제 발행 완료 시 bridge 가 알림)", "info")
+        return
     if published == 0 and skipped_dup == len(articles) and skipped_dup > 0:
         notify_pipeline_result(cfg.name, 0, count,
                                details=f"새 기사 없음 ({skipped_dup}건 모두 중복)",

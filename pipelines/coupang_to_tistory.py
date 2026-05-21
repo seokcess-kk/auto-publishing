@@ -103,8 +103,9 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
         notify_pipeline_result("쿠팡→티스토리", 0, post_count, details="수집 실패")
         return
 
-    # 3) 티스토리 로그인 + 발행
-    pub = TistoryPublisher(blog_name)
+    # 3) 티스토리 로그인 + 발행 — TISTORY_PUBLISHER (web|bridge) 에 따라 선택
+    from common.tistory_blogs import make_publisher
+    pub = make_publisher(blog_name)
     if not pub.login():
         log(f"티스토리 로그인 실패 (blog={blog_name}). 종료.", "error")
         from common.notifier import notify_pipeline_result
@@ -165,7 +166,16 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
             log(f"키워드 기록 실패 ({e})", "warn")
 
     total = min(post_count, len(keywords))
-    log(f"[쿠팡→티스토리] 완료: {published}/{total}건 발행", "step")
+    is_bridge = os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
+    verb = "큐 등록" if is_bridge else "발행"
+    log(f"[쿠팡→티스토리] 완료: {published}/{total}건 {verb}", "step")
+
+    # bridge 모드 + 성공 (큐 등록만 됨) → 파이프라인 알림 skip.
+    # 실제 발행 완료 텔레그램 알림은 bridge server 가 /done 처리 시 보낸다.
+    # (false positive "발행 성공" 알림 방지)
+    if is_bridge and published > 0:
+        log("[쿠팡→티스토리] bridge 모드 — 파이프라인 알림 skip", "info")
+        return
 
     from common.notifier import notify_pipeline_result
     notify_pipeline_result(

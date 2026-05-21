@@ -155,18 +155,42 @@ def _safe_subprocess_call(module_name: str) -> None:
             pass
         return
 
+    # 대부분의 파이프라인은 내부 로직에서 publish 실패해도 sys.exit(0) 으로
+    # 끝나는 구조라 exit_code 만으로는 "발행이 실제로 됐는지" 알 수 없다.
+    # stderr 에 [ERROR] 라인이 남아 있으면 — 그리고 명시적인 성공 표식
+    # ("발행 성공"/"발행 완료"/"발행 ... 1/" 등) 이 함께 보이지 않으면 —
+    # exit 0 이어도 status 를 'failure' 로 강제해 daily_summary / 텔레그램
+    # 알림이 거짓 양성을 보내지 않게 한다.
     status = "success" if proc.returncode == 0 else "failure"
+    if proc.returncode == 0:
+        try:
+            stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace") if isinstance(proc.stderr, (bytes, bytearray)) else (proc.stderr or "")
+        except Exception:
+            stderr_text = ""
+        if "[ERROR]" in stderr_text:
+            # 성공 마커가 보이면 일부 성공으로 본다 (보수적으로 success 유지)
+            success_markers = ("발행 성공", "발행 완료", "발행 완료:")
+            if not any(m in stderr_text for m in success_markers):
+                status = "failure"
+                log(f"{module_name} exit=0 이지만 stderr 에 [ERROR] 존재 — 'failure' 로 기록", "warn")
+
     append_run(
         module=module_name, started_at=started_at, finished_at=_dt.now(),
         exit_code=proc.returncode, status=status,
         stderr_tail=proc.stderr,
     )
 
-    if proc.returncode != 0:
-        log(f"{module_name} 비정상 종료 (exit={proc.returncode})", "error")
+    if status == "failure":
+        if proc.returncode != 0:
+            log(f"{module_name} 비정상 종료 (exit={proc.returncode})", "error")
         try:
             from common.notifier import notify_error
-            notify_error(module_name, RuntimeError(f"exit code {proc.returncode}"))
+            reason = (
+                f"exit code {proc.returncode}"
+                if proc.returncode != 0
+                else "stderr 에 [ERROR] 존재 (publish 실패 추정)"
+            )
+            notify_error(module_name, RuntimeError(reason))
         except Exception:
             pass
 
@@ -319,6 +343,14 @@ def main() -> None:
 
     # 다른 scheduler_runner 인스턴스가 떠있으면 즉시 정리 — 중복 발행 방지
     _kill_other_scheduler_instances()
+
+    # Tistory bridge 모드면 HTTP 서버를 daemon thread 로 임베드 — 별도 터미널 불필요
+    if os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge":
+        try:
+            from pipelines.tistory_bridge import start_server_in_thread
+            start_server_in_thread(port=int(os.getenv("TISTORY_BRIDGE_PORT", "5757")))
+        except Exception as e:
+            log(f"[bridge] embedded 시작 예외 (무시 — 별도 프로세스로 띄울 수 있음): {e}", "warn")
 
     registered = 0
 

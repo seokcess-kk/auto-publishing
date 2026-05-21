@@ -47,7 +47,8 @@ SCHEDULE = {
 
 def _tistory_factory():
     blog_name = resolve_blog_name("newspick")
-    return TistoryPublisher(blog_name)
+    from common.tistory_blogs import make_publisher
+    return make_publisher(blog_name)
 
 
 _CFG = NewspickConfig(
@@ -89,9 +90,10 @@ def run(category: str = "추천", count: int = 1,
 
     if blog_name:
         # blog_name 명시 시 factory 를 덮어쓴 임시 Config 사용
+        from common.tistory_blogs import make_publisher as _mp
         cfg = NewspickConfig(
             name=_CFG.name,
-            publisher_factory=lambda: TistoryPublisher(blog_name),
+            publisher_factory=lambda: _mp(blog_name),
             post_category_env=_CFG.post_category_env,
             sleep_range=_CFG.sleep_range,
         )

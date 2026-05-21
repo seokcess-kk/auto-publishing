@@ -35,7 +35,27 @@ from common.url_shortener import shorten as shorten_url
 from publishers.threads import ThreadsPublisher
 from sources.aliexpress import AliexpressSource
 
-from pipelines.coupang_to_wordpress import get_keywords
+from pipelines.coupang_to_wordpress import get_keywords  # 폴백용
+
+# 알리에 매칭 잘 되는 카테고리만 — 식품/여가생활편의/도서/면세점/기타 제외.
+# (예: '경주월드' = 여가생활편의 → 알리 매칭 0, '다이소' = 기타 등은 제외)
+ALIEXPRESS_CATEGORIES = [
+    "패션의류", "패션잡화", "화장품/미용", "디지털/가전",
+    "가구/인테리어", "출산/육아", "스포츠/레저", "생활/건강",
+]
+
+
+def get_ali_keywords(n: int = 1) -> list:
+    """알리 적합 카테고리만 화이트리스트로 필터한 키워드 풀에서 추출."""
+    from sources.itemscout_keywords import get_next_keywords
+    try:
+        kws = get_next_keywords(n=n, refill_threshold=50, categories=ALIEXPRESS_CATEGORIES)
+        if kws:
+            return kws
+    except Exception as e:
+        log(f"ItemScout 알리 필터 키워드 실패 ({e}), fallback 전체 풀", "warn")
+    # 폴백 — 전체 풀에서
+    return get_keywords(n=n)
 
 
 SCHEDULE = {
@@ -131,13 +151,13 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
     mode = (mode or os.getenv("THREADS_MODE", "single")).lower()
     log(f"[알리→Threads] 시작 (mode={mode})", "step")
 
-    # 1) 키워드
+    # 1) 키워드 — 알리 적합 카테고리 화이트리스트 사용
     if keyword:
         kw = keyword
         log(f"단일 키워드 모드: {kw}", "info")
     else:
         log(get_pool_status(), "info")
-        kws = get_keywords(n=1)
+        kws = get_ali_keywords(n=1)
         if not kws:
             log("키워드 추출 실패", "error")
             return

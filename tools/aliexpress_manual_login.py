@@ -66,22 +66,87 @@ def collect_and_save_state() -> bool:
 
         print("브라우저가 열렸습니다. 알리익스프레스에 로그인하세요.")
         print("(Google/Kakao 연동, 이메일/비밀번호, 캡차, 2FA 모두 가능)")
+        print("※ Google 팝업이 닫혀도 알리 페이지가 멈춰있으면, 같은 창에서")
+        print("  https://www.aliexpress.com 로 직접 이동해보세요.")
         page.goto(_LOGIN_URL)
 
-        input(">>> 로그인 완료 후 Enter <<<")
+        # 인증 쿠키 후보 — region/계정 유형에 따라 발급 키가 달라 후보를 넓게 잡는다.
+        # xman_t/_hvn_login/x_user_id 등 '확실히 로그인됨'을 의미하는 marker 와
+        # ali_apache_id/_m_h5_tk 같은 'visit 만 있어도 발급되는' marker 를 분리.
+        strong_markers = {"xman_t", "_hvn_login", "x_user_id", "x_alimid",
+                          "ali_apache_track_ae", "xman_us_f", "xman_us_t",
+                          "ae_u_p_s", "_ali_apache_session"}
+        # weak markers 는 fallback (메인을 한 번이라도 방문하면 발급)
+        weak_markers = {"ali_apache_id", "aep_usuc_f", "_m_h5_tk", "intl_locale"}
 
-        # 로그인 완료 검증: 알리 인증 쿠키 (xman_t / _hvn_login / x_user_id /
-        # ali_apache_id 등 가운데 하나라도 있으면 OK). region 별로 키 이름이
-        # 미세히 다르니 후보를 넓게 두고 매칭.
-        cookies = context.cookies(["https://www.aliexpress.com",
-                                    "https://login.aliexpress.com",
-                                    "https://passport.aliexpress.com",
-                                    "https://ko.aliexpress.com"])
-        cookie_names = {c["name"] for c in cookies}
-        auth_markers = {"xman_t", "_hvn_login", "x_user_id", "ali_apache_id",
-                        "aep_usuc_f", "ali_apache_track", "_m_h5_tk",
-                        "ali_apache_track_ae", "intl_locale", "x_alimid"}
-        has_auth = bool(cookie_names & auth_markers)
+        # 인증 쿠키가 잡힐 때까지 폴링 — Enter 입력 전에도 자동 감지해서
+        # 사용자가 더 명확하게 진행 상황을 볼 수 있도록.
+        import time as _t
+        domains = ["https://www.aliexpress.com",
+                   "https://login.aliexpress.com",
+                   "https://passport.aliexpress.com",
+                   "https://ko.aliexpress.com",
+                   "https://my.aliexpress.com"]
+
+        def _read_cookie_names() -> set:
+            try:
+                return {c["name"] for c in context.cookies(domains)}
+            except Exception:
+                return set()
+
+        print()
+        print(">>> 로그인 완료 후 Enter (자동 감지도 30초마다 표시) <<<")
+
+        # Enter 입력은 별도 스레드에서 받고, 본 스레드는 쿠키 감지 폴링.
+        import threading
+        enter_pressed = threading.Event()
+
+        def _wait_enter():
+            try:
+                input()
+            except Exception:
+                pass
+            enter_pressed.set()
+
+        threading.Thread(target=_wait_enter, daemon=True).start()
+
+        cookie_names: set = set()
+        last_status = ""
+        nav_tried = False
+        deadline = _t.time() + 600  # 최대 10분 대기
+        while not enter_pressed.is_set() and _t.time() < deadline:
+            cookie_names = _read_cookie_names()
+            strong_hit = cookie_names & strong_markers
+            weak_hit = cookie_names & weak_markers
+            if strong_hit:
+                status = f"✓ 강한 인증 쿠키 감지: {sorted(strong_hit)[:5]} — Enter 로 저장"
+            elif weak_hit:
+                status = f"… 약한 쿠키만 있음 ({sorted(weak_hit)}). 메인 페이지가 정상 로딩됐는지 확인 후 Enter"
+            else:
+                status = f"… 인증 쿠키 미감지 (현재 {len(cookie_names)}개)"
+            if status != last_status:
+                print(status)
+                last_status = status
+
+            # Google 로그인 후 부모 페이지가 멈춰있는 케이스 자동 회복:
+            # 강한 마커가 없는데 60초 이상 지나면 한 번만 www.aliexpress.com 로
+            # 페이지를 이동시켜 봄 (쿠키 propagation 강제).
+            if (not strong_hit and not nav_tried
+                    and _t.time() - (deadline - 600) > 60):
+                try:
+                    print("  60초 경과 — www.aliexpress.com 으로 자동 이동 시도")
+                    page.goto("https://www.aliexpress.com",
+                              wait_until="domcontentloaded", timeout=15000)
+                    nav_tried = True
+                except Exception as e:
+                    print(f"  자동 이동 예외 (무시): {e}")
+                    nav_tried = True
+
+            _t.sleep(3)
+
+        cookie_names = _read_cookie_names()
+        all_markers = strong_markers | weak_markers
+        has_auth = bool(cookie_names & all_markers)
         if not has_auth:
             print(f"인증 쿠키가 보이지 않습니다 (보유 {len(cookie_names)}개): "
                   f"{sorted(cookie_names)[:15]}")
@@ -93,7 +158,7 @@ def collect_and_save_state() -> bool:
         context.close()
 
     print(f"세션 저장 완료: {_STORAGE_PATH}")
-    print(f"감지된 인증 쿠키: {sorted(cookie_names & auth_markers)}")
+    print(f"감지된 인증 쿠키: {sorted(cookie_names & all_markers)}")
     return True
 
 

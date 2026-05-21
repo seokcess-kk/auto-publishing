@@ -24,7 +24,8 @@ from publishers.tistory import TistoryPublisher
 from sources.aliexpress import AliexpressSource
 
 from pipelines.aliexpress_to_wordpress import build_content
-from pipelines.coupang_to_wordpress import get_keywords
+from pipelines.coupang_to_wordpress import get_keywords  # 폴백용
+from pipelines.aliexpress_to_threads import get_ali_keywords
 
 
 SCHEDULE = {
@@ -62,7 +63,8 @@ def run(count_per_keyword: int = 10,
     else:
         log(get_pool_status(), "info")
         post_count = int(os.getenv("ALIEXPRESS_POST_COUNT", "1"))
-        keywords   = get_keywords(n=post_count)
+        # 알리 적합 카테고리 화이트리스트로 필터된 키워드
+        keywords   = get_ali_keywords(n=post_count)
 
     # collected: [(keyword, products), ...]
     collected: list[tuple[str, list]] = []
@@ -94,8 +96,9 @@ def run(count_per_keyword: int = 10,
         notify_pipeline_result("알리→티스토리", 0, post_count, details="수집 실패")
         return
 
-    # 2) 티스토리 로그인 (이 시점에 sync_playwright 새로 켜짐)
-    pub = TistoryPublisher(blog_name)
+    # 2) 티스토리 로그인 — TISTORY_PUBLISHER (web|bridge) 에 따라 선택
+    from common.tistory_blogs import make_publisher
+    pub = make_publisher(blog_name)
     if not pub.login():
         log(f"티스토리 로그인 실패 (blog={blog_name}). 종료.", "error")
         from common.notifier import notify_pipeline_result
@@ -143,7 +146,13 @@ def run(count_per_keyword: int = 10,
         mark_keywords_used(published_keywords)
 
     total = min(post_count, len(keywords))
-    log(f"[알리→티스토리] 완료: {published}/{total}건 발행", "step")
+    is_bridge = os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
+    verb = "큐 등록" if is_bridge else "발행"
+    log(f"[알리→티스토리] 완료: {published}/{total}건 {verb}", "step")
+
+    if is_bridge and published > 0:
+        log("[알리→티스토리] bridge 모드 — 파이프라인 알림 skip", "info")
+        return
 
     from common.notifier import notify_pipeline_result
     notify_pipeline_result(

@@ -70,3 +70,23 @@ def resolve_blog_name(role: str) -> str:
 def list_blogs() -> dict:
     """현재 role → blog_name 매핑을 dict 로 반환 (디버깅용)."""
     return {role: resolve_blog_name(role) for role in SUPPORTED_ROLES}
+
+
+def make_publisher(blog_name: str):
+    """TISTORY_PUBLISHER 환경변수에 따라 적절한 Publisher 인스턴스 반환.
+
+    값:
+        'bridge'    — publishers/tistory_bridge.py (Chrome Extension 브릿지)
+                       Tistory DKAPTCHA 우회용. 평소 Chrome + extension 필요.
+        'web' (기본) — publishers/tistory.py (Playwright persistent context)
+                       2026-05-16+ DKAPTCHA 도입으로 사실상 발행 불가.
+
+    파이프라인 factory 가 직접 TistoryPublisher(...) 를 생성하는 대신 이 함수를
+    호출하면 .env 한 줄로 전체 파이프라인 발행 경로 전환 가능.
+    """
+    mode = os.getenv("TISTORY_PUBLISHER", "web").strip().lower()
+    if mode == "bridge":
+        from publishers.tistory_bridge import TistoryBridgePublisher
+        return TistoryBridgePublisher(blog_name)
+    from publishers.tistory import TistoryPublisher
+    return TistoryPublisher(blog_name)
