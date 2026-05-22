@@ -9,6 +9,10 @@ console.log("[bridge] background.js loaded @", new Date().toISOString());
 const BRIDGE = "http://localhost:5757";
 const ACTIVE_KEY = "active_item";
 const POLL_PERIOD_MIN = 0.5; // 30초 — Chrome 알람 최소값
+// Kakao SSO 쿠키가 무인/idle 상태에서 ~24h 안에 만료되는 경향. 6시간마다
+// /manage 한 번 fetch 해서 활동 흔적을 남기고 토큰 회전을 유도한다.
+const KEEPALIVE_PERIOD_MIN = 360;
+const KEEPALIVE_URL = "https://www.tistory.com/manage/";
 
 // ─── 상태 관리 ────────────────────────────────────────────────────────────────
 
@@ -213,6 +217,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
+// ─── 세션 keepalive ───────────────────────────────────────────────────────────
+
+async function sessionKeepalive() {
+  try {
+    // credentials:include 로 사용자 Chrome 의 카카오/티스토리 쿠키를 그대로 사용.
+    // /auth/login 으로 리다이렉트되면 세션 만료 — 로그 남기고 다음 polling 때 발견됨.
+    const r = await fetch(KEEPALIVE_URL, { method: "GET", credentials: "include", redirect: "follow" });
+    const expired = (r.url || "").includes("/auth/login");
+    console.log("[keepalive] /manage", r.status, expired ? "(EXPIRED → /auth/login)" : "OK");
+  } catch (e) {
+    console.warn("[keepalive] fetch 실패:", e.message);
+  }
+}
+
 // ─── 주기 polling ─────────────────────────────────────────────────────────────
 
 // chrome.alarms.create — Chrome 120+ 에선 unpacked 환경에서 최소 0.5분 (30초).
@@ -220,16 +238,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[bridge] onInstalled — alarm 등록");
   chrome.alarms.create("poll", { periodInMinutes: POLL_PERIOD_MIN, delayInMinutes: 0.1 });
+  chrome.alarms.create("keepalive", { periodInMinutes: KEEPALIVE_PERIOD_MIN, delayInMinutes: 1 });
 });
 
 chrome.runtime.onStartup.addListener(() => {
   console.log("[bridge] onStartup — alarm 재등록 + 즉시 1회");
   chrome.alarms.create("poll", { periodInMinutes: POLL_PERIOD_MIN, delayInMinutes: 0.1 });
+  chrome.alarms.create("keepalive", { periodInMinutes: KEEPALIVE_PERIOD_MIN, delayInMinutes: 1 });
   processOne().catch(console.warn);
+  sessionKeepalive().catch(console.warn);
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "poll") processOne().catch(console.warn);
+  if (alarm.name === "keepalive") sessionKeepalive().catch(console.warn);
 });
 
 // ─── 발행 완료 감지 (webNavigation) ──────────────────────────────────────────
