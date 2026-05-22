@@ -35,6 +35,12 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# standalone 실행(`python -m pipelines.tistory_bridge`) 시 .env 가 로드돼야
+# _resolve_blogs() 가 TISTORY_BLOG_* 를 볼 수 있다. scheduler_runner 가 import 할
+# 때는 이미 load 됐어도 무해 (load_dotenv 는 idempotent).
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv()
+
 from common.logger import log  # noqa: E402
 from common.tistory_queue import (  # noqa: E402
     claim_next, list_all, mark_done, mark_failed,
@@ -46,6 +52,26 @@ from common.tistory_queue import (  # noqa: E402
 
 
 _DEFAULT_PORT = 5757
+
+
+def _resolve_blogs() -> list[str]:
+    """확장 keepalive 가 /manage 를 두드릴 블로그 목록.
+
+    SUPPORTED_ROLES 별 매핑을 모아 dedup. 매핑 없는 role 은 ValueError 가 나는데
+    이는 단일 블로그 운영 케이스(role 매핑 없이 TISTORY_BLOG_NAME 만)에선 정상이므로
+    조용히 skip. 모듈 import 시 한 번만 호출되어 healthz 응답에 캐싱된다.
+    """
+    from common.tistory_blogs import SUPPORTED_ROLES, resolve_blog_name
+    blogs: set[str] = set()
+    for role in SUPPORTED_ROLES:
+        try:
+            blogs.add(resolve_blog_name(role))
+        except ValueError:
+            continue
+    return sorted(blogs)
+
+
+_BLOGS_CACHE: list[str] = _resolve_blogs()
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -99,7 +125,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
-            self._json(200, {"ok": True, "pending": len(list_all("pending"))})
+            self._json(200, {
+                "ok": True,
+                "pending": len(list_all("pending")),
+                "blogs": _BLOGS_CACHE,
+            })
             return
         if path == "/next":
             item = claim_next()

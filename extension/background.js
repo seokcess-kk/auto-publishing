@@ -10,9 +10,9 @@ const BRIDGE = "http://localhost:5757";
 const ACTIVE_KEY = "active_item";
 const POLL_PERIOD_MIN = 0.5; // 30초 — Chrome 알람 최소값
 // Kakao SSO 쿠키가 무인/idle 상태에서 ~24h 안에 만료되는 경향. 6시간마다
-// /manage 한 번 fetch 해서 활동 흔적을 남기고 토큰 회전을 유도한다.
+// 각 블로그의 /manage 를 fetch 해서 활동 흔적을 남기고 토큰 회전을 유도한다.
+// www.tistory.com 에는 /manage 가 없음 — 반드시 <blog>.tistory.com/manage.
 const KEEPALIVE_PERIOD_MIN = 360;
-const KEEPALIVE_URL = "https://www.tistory.com/manage/";
 
 // ─── 상태 관리 ────────────────────────────────────────────────────────────────
 
@@ -220,14 +220,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ─── 세션 keepalive ───────────────────────────────────────────────────────────
 
 async function sessionKeepalive() {
+  // bridge /healthz 응답의 blogs 목록을 사용 — .env 의 TISTORY_BLOG_* 매핑 그대로.
+  let blogs = [];
   try {
-    // credentials:include 로 사용자 Chrome 의 카카오/티스토리 쿠키를 그대로 사용.
-    // /auth/login 으로 리다이렉트되면 세션 만료 — 로그 남기고 다음 polling 때 발견됨.
-    const r = await fetch(KEEPALIVE_URL, { method: "GET", credentials: "include", redirect: "follow" });
-    const expired = (r.url || "").includes("/auth/login");
-    console.log("[keepalive] /manage", r.status, expired ? "(EXPIRED → /auth/login)" : "OK");
+    const r = await fetch(`${BRIDGE}/healthz`);
+    if (r.ok) {
+      const d = await r.json();
+      blogs = Array.isArray(d.blogs) ? d.blogs : [];
+    }
   } catch (e) {
-    console.warn("[keepalive] fetch 실패:", e.message);
+    console.warn("[keepalive] bridge /healthz 실패:", e.message);
+    return;
+  }
+  if (blogs.length === 0) {
+    console.warn("[keepalive] bridge 가 blog 목록을 반환하지 않음 — skip");
+    return;
+  }
+  for (const blog of blogs) {
+    try {
+      const url = `https://${blog}.tistory.com/manage/`;
+      // credentials:include 로 사용자 Chrome 의 카카오/티스토리 쿠키를 그대로 사용.
+      // /auth/login 으로 리다이렉트되면 세션 만료.
+      const r = await fetch(url, { method: "GET", credentials: "include", redirect: "follow" });
+      const expired = (r.url || "").includes("/auth/login");
+      console.log(`[keepalive] ${blog} ${r.status} ${expired ? "(EXPIRED → /auth/login)" : "OK"}`);
+    } catch (e) {
+      console.warn(`[keepalive] ${blog} fetch 실패:`, e.message);
+    }
   }
 }
 
