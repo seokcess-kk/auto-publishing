@@ -197,7 +197,8 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
     # bridge 모드 = 큐 등록만 한 것. 실제 발행 완료 텔레그램 알림은 bridge
     # server 가 /done 받을 때 보낸다 — 파이프라인 단계 알림은 skip (false
     # positive 방지).
-    is_bridge = "tistory" in cfg.name.lower() and \
+    # cfg.name 은 한글("뉴스픽→티스토리") 또는 영문("→tistory") 둘 다 허용
+    is_bridge = ("tistory" in cfg.name.lower() or "티스토리" in cfg.name) and \
         os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
     verb = "큐 등록" if is_bridge else "발행"
     log(f"{cfg.name} 완료: {published}/{count}건 {verb}", "step")
