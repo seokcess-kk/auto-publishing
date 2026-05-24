@@ -9,9 +9,15 @@
        (Windows 기본: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe)
 
 흐름:
-  1. Playwright + channel='chrome' + persistent profile (.sessions/tistory_shared_profile)
+  1. Playwright + channel='chrome' + persistent profile
+     (.sessions/tistory_chrome_channel_test — 본 운영 프로필과 격리)
   2. 사용자가 직접 로그인 → 글쓰기 → 발행 → DKAPTCHA 풀이
   3. 캡차 통과/실패 결과를 사용자가 직접 보고
+
+⚠️ 주의: 본 운영 프로필 (.sessions/tistory_shared_profile) 을 user_data_dir
+로 지정하면 안 된다. 사용자 Chrome 이 그 디렉토리를 자기 포맷으로
+마이그레이션해 이후 Playwright Chromium 의 launch 가 STATUS_BREAKPOINT
+로 즉시 죽는 영구 손상이 발생한다 (2026-05 사고 이력).
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ load_dotenv(REPO_ROOT / ".env")
 from common.logger import log  # noqa: E402
 
 
-PROFILE_DIR = REPO_ROOT / ".sessions" / "tistory_shared_profile"
+PROFILE_DIR = REPO_ROOT / ".sessions" / "tistory_chrome_channel_test"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
