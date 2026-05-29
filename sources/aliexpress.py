@@ -231,9 +231,24 @@ class AliexpressSource:
         return True
 
     def _relogin(self) -> bool:
-        from common.aliexpress_login import login_and_save_cookies
-        log("알리익스프레스 재로그인 시작", "step")
-        return login_and_save_cookies(COOKIE_PATH)
+        """자동 재로그인 비활성화 (2026-05-29).
+
+        제휴(Partners) 계정은 Google 계정(assagaori00@gmail.com)인데,
+        common.aliexpress_login 의 자동 로그인은 Kakao SSO 라 제휴 미가입
+        naver 구매자 계정(ae712475)으로 들어가 유효 세션을 잘못된 계정으로
+        덮어쓴다. 따라서 자동 재로그인 대신 수동 Google 로그인을 안내만 한다.
+        세션 갱신: python tools/aliexpress_manual_login.py → 'Continue with Google'.
+        """
+        log("알리 자동 재로그인 비활성화 — 수동 Google 로그인 필요", "warn")
+        try:
+            from common.notifier import notify_login_required
+            notify_login_required(
+                "알리익스프레스 (제휴=Google 계정)",
+                "python tools/aliexpress_manual_login.py → 'Continue with Google' 로 로그인",
+            )
+        except Exception:
+            pass
+        return False
 
     def _is_captcha_page(self) -> bool:
         """현재 페이지가 captcha / punish 페이지인지 감지."""
@@ -302,32 +317,17 @@ class AliexpressSource:
                 continue
 
     def _reset_session(self, wipe_storage: bool = True) -> bool:
-        """저장된 storage_state 를 폐기하고 브라우저 재시작 + 재로그인.
+        """세션 초기화 요청 — 자동 재로그인 비활성화 후로는 storage 를 지우지 않는다.
 
-        5xx 차단이 지속될 때 호출. 기존 쿠키가 탐지 플래그를 가지고 있을 가능성을 제거.
+        과거엔 5xx 지속 시 storage 를 삭제하고 자동 재로그인했지만, 자동 로그인이
+        잘못된 계정으로 들어가는 문제(_relogin 주석 참고) 때문에 유효 세션을
+        날리지 않고 수동 Google 로그인 안내만 한다. wipe_storage 인자는 호환용으로
+        남기되 사용하지 않는다.
         """
-        log("🔄 세션 초기화 시작 (브라우저 재시작 + 재로그인)", "step")
-
-        # 1) 현재 브라우저 완전 종료
+        log("세션 초기화 요청 — 자동 재로그인 비활성, 수동 로그인 안내만 수행", "warn")
         self.close()
-
-        # 2) 손상된 세션 파일 삭제
-        if wipe_storage:
-            for p in (STORAGE_PATH, COOKIE_PATH):
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                        log(f"세션 파일 삭제: {p}", "info")
-                except Exception as e:
-                    log(f"세션 파일 삭제 실패 ({p}): {e}", "warn")
-
-        # 3) 재로그인 + 브라우저 재기동
-        if not self._relogin():
-            log("재로그인 실패", "error")
-            return False
-
         self._session_reset_done = True
-        return self._ensure_browser()
+        return self._relogin()  # notify + False, storage 보존
 
     def _goto_with_retry(self, url: str, retries: int = 2) -> bool:
         """page.goto() 재시도 래퍼. HTTP 에러 시 warmup → 세션 초기화 순으로 복구."""
@@ -500,10 +500,15 @@ class AliexpressSource:
             body = res.text()
             if not body.strip().startswith("{"):
                 if "login" in body.lower() or "sign" in body.lower():
-                    log("알리 링크 생성 — 세션 만료 감지, storage 삭제 후 재로그인 필요", "warn")
-                    import os as _os
+                    # storage 를 지우지 않는다 — 유효할 수도 있는 세션을 보존하고
+                    # (검색은 비로그인으로도 됨) 수동 Google 재로그인만 안내한다.
+                    log("알리 링크 생성 — 제휴 세션 만료/미가입 감지, 수동 Google 로그인 필요", "warn")
                     try:
-                        _os.remove(STORAGE_PATH)
+                        from common.notifier import notify_login_required
+                        notify_login_required(
+                            "알리익스프레스 (제휴=Google 계정)",
+                            "python tools/aliexpress_manual_login.py → 'Continue with Google' 로 로그인",
+                        )
                     except Exception:
                         pass
                 return ""

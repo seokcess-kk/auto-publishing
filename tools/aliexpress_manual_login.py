@@ -20,6 +20,13 @@ import os
 import sys
 from pathlib import Path
 
+# Windows 콘솔(cp949)은 '✓' 등 유니코드 출력에서 UnicodeEncodeError 로 죽는다.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _DATA_DIR = _BASE_DIR / "data"
 _STORAGE_PATH = _DATA_DIR / "aliexpress_storage.json"
@@ -70,95 +77,101 @@ def collect_and_save_state() -> bool:
         print("  https://www.aliexpress.com 로 직접 이동해보세요.")
         page.goto(_LOGIN_URL)
 
-        # 인증 쿠키 후보 — region/계정 유형에 따라 발급 키가 달라 후보를 넓게 잡는다.
-        # xman_t/_hvn_login/x_user_id 등 '확실히 로그인됨'을 의미하는 marker 와
-        # ali_apache_id/_m_h5_tk 같은 'visit 만 있어도 발급되는' marker 를 분리.
-        strong_markers = {"xman_t", "_hvn_login", "x_user_id", "x_alimid",
-                          "ali_apache_track_ae", "xman_us_f", "xman_us_t",
-                          "ae_u_p_s", "_ali_apache_session"}
-        # weak markers 는 fallback (메인을 한 번이라도 방문하면 발급)
-        weak_markers = {"ali_apache_id", "aep_usuc_f", "_m_h5_tk", "intl_locale"}
-
-        # 인증 쿠키가 잡힐 때까지 폴링 — Enter 입력 전에도 자동 감지해서
-        # 사용자가 더 명확하게 진행 상황을 볼 수 있도록.
+        # 진짜 로그인 판정 — 쿠키 이름(xman_t 등)은 비로그인 방문에도 발급되어
+        # 신뢰할 수 없다. portals 제휴 API 가 JSON 을 돌려주는지로 확정한다.
+        # 이건 실제 발행 시 sources/aliexpress.py._shorten_link 가 쓰는 것과
+        # 동일한 신호 — 이게 통과하면 발행도 된다.
         import time as _t
-        domains = ["https://www.aliexpress.com",
-                   "https://login.aliexpress.com",
-                   "https://passport.aliexpress.com",
-                   "https://ko.aliexpress.com",
-                   "https://my.aliexpress.com"]
 
-        def _read_cookie_names() -> set:
+        track_id = os.getenv("ALIEXPRESS_TRACKING_ID", "wordpress")
+
+        def _portals_logged_in() -> bool:
+            url = ("https://portals.aliexpress.com/tools/linkGenerate/"
+                   "generatePromotionLink.htm"
+                   f"?trackId={track_id}"
+                   "&targetUrl=https%3A%2F%2Fwww.aliexpress.com")
             try:
-                return {c["name"] for c in context.cookies(domains)}
+                res = context.request.get(url, headers={
+                    "accept": "application/json, text/plain, */*",
+                    "referer": ("https://portals.aliexpress.com/"
+                                "affiportals/web/link_generator.htm"),
+                    "user-agent": _USER_AGENT,
+                }, timeout=15000)
+                if not res.ok:
+                    return False
+                # 로그인 안 됐으면 JSON 대신 로그인 HTML 페이지가 온다.
+                return res.text().strip().startswith("{")
             except Exception:
-                return set()
+                return False
 
         print()
-        print(">>> 로그인 완료 후 Enter (자동 감지도 30초마다 표시) <<<")
+        print(">>> 브라우저에서 로그인을 끝까지 완료하세요 (제휴 계정으로!) <<<")
+        print("    로그인이 자동 감지되면 저장하고 종료합니다 (Enter 불필요).")
 
-        # Enter 입력은 별도 스레드에서 받고, 본 스레드는 쿠키 감지 폴링.
+        # Enter 입력은 별도 스레드에서 받고, 본 스레드는 portals 접근 폴링.
+        # 단, 백그라운드 실행(stdin 이 tty 가 아님)에서는 input() 이 즉시 EOF 로
+        # 반환돼 'Enter 눌림'이 무한 오발동하므로 tty 일 때만 Enter 스레드를 띄운다.
         import threading
         enter_pressed = threading.Event()
+        _stdin_tty = False
+        try:
+            _stdin_tty = sys.stdin is not None and sys.stdin.isatty()
+        except Exception:
+            _stdin_tty = False
 
         def _wait_enter():
             try:
                 input()
             except Exception:
-                pass
+                return  # stdin 없음 — enter_pressed 설정하지 않음
             enter_pressed.set()
 
-        threading.Thread(target=_wait_enter, daemon=True).start()
+        if _stdin_tty:
+            print("    (수동 저장: 로그인 후 Enter)")
+            threading.Thread(target=_wait_enter, daemon=True).start()
+        else:
+            print("    (백그라운드 실행 — 자동 감지만 사용)")
 
-        cookie_names: set = set()
+        logged_in = False
         last_status = ""
-        nav_tried = False
         deadline = _t.time() + 600  # 최대 10분 대기
-        while not enter_pressed.is_set() and _t.time() < deadline:
-            cookie_names = _read_cookie_names()
-            strong_hit = cookie_names & strong_markers
-            weak_hit = cookie_names & weak_markers
-            if strong_hit:
-                status = f"✓ 강한 인증 쿠키 감지: {sorted(strong_hit)[:5]} — Enter 로 저장"
-            elif weak_hit:
-                status = f"… 약한 쿠키만 있음 ({sorted(weak_hit)}). 메인 페이지가 정상 로딩됐는지 확인 후 Enter"
-            else:
-                status = f"… 인증 쿠키 미감지 (현재 {len(cookie_names)}개)"
+        while _t.time() < deadline:
+            logged_in = _portals_logged_in()
+            status = ("✓ 로그인 확인됨 (portals 제휴 접근 성공) — 저장합니다"
+                      if logged_in else
+                      "… 아직 제휴 로그인 전 — 브라우저에서 제휴 계정으로 로그인을 완료하세요")
             if status != last_status:
-                print(status)
+                print(status, flush=True)
                 last_status = status
 
-            # Google 로그인 후 부모 페이지가 멈춰있는 케이스 자동 회복:
-            # 강한 마커가 없는데 60초 이상 지나면 한 번만 www.aliexpress.com 로
-            # 페이지를 이동시켜 봄 (쿠키 propagation 강제).
-            if (not strong_hit and not nav_tried
-                    and _t.time() - (deadline - 600) > 60):
-                try:
-                    print("  60초 경과 — www.aliexpress.com 으로 자동 이동 시도")
-                    page.goto("https://www.aliexpress.com",
-                              wait_until="domcontentloaded", timeout=15000)
-                    nav_tried = True
-                except Exception as e:
-                    print(f"  자동 이동 예외 (무시): {e}")
-                    nav_tried = True
+            if logged_in:
+                break  # 자동 저장
+
+            if enter_pressed.is_set():
+                # 사용자가 '로그인 다 됐다'고 Enter — portals 로 재확인.
+                if _portals_logged_in():
+                    logged_in = True
+                    print("✓ Enter — 로그인 확인됨, 저장합니다", flush=True)
+                    break
+                print("✗ Enter 눌렀지만 portals 제휴 접근이 안 됩니다 — 로그인이 "
+                      "아직 완료되지 않았습니다. 로그인 후 다시 Enter.", flush=True)
+                enter_pressed.clear()
+                if _stdin_tty:
+                    threading.Thread(target=_wait_enter, daemon=True).start()
 
             _t.sleep(3)
 
-        cookie_names = _read_cookie_names()
-        all_markers = strong_markers | weak_markers
-        has_auth = bool(cookie_names & all_markers)
-        if not has_auth:
-            print(f"인증 쿠키가 보이지 않습니다 (보유 {len(cookie_names)}개): "
-                  f"{sorted(cookie_names)[:15]}")
-            print("로그인이 완료되지 않은 것 같습니다 — 브라우저에서 다시 시도 후 재실행하세요.")
+        if not logged_in:
+            print("제휴 로그인 확인 실패 (시간 초과 또는 미완료) — 저장하지 않습니다.", flush=True)
+            print("브라우저에서 제휴(Partners) 계정으로 로그인한 뒤 다시 실행하세요.", flush=True)
             context.close()
             return False
 
         context.storage_state(path=str(_STORAGE_PATH))
         context.close()
 
-    print(f"세션 저장 완료: {_STORAGE_PATH}")
-    print(f"감지된 인증 쿠키: {sorted(cookie_names & all_markers)}")
+    print(f"세션 저장 완료: {_STORAGE_PATH}", flush=True)
+    print("portals 제휴 접근 확인됨 — 진짜 로그인 세션입니다.", flush=True)
     return True
 
 

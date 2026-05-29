@@ -76,37 +76,48 @@ def login_and_save_cookies(cookie_path: str) -> bool:
             page.goto(LOGIN_URL, timeout=30000, wait_until="domcontentloaded")
             time.sleep(3)
 
-            # 1) 진입 페이지 분기 — 약관 화면 vs 일반 로그인 폼.
-            #    알리는 첫 로그인 시 곧장 ug-login-page (title='이용 약관') 로 보내며,
-            #    약관 동의만 하면 알리 측에 매핑된 SSO(카카오 등) 로 자동 redirect 한다.
-            #    카카오 버튼은 약관 화면에 존재하지 않음 — 클릭 시도는 무의미.
-            #    약관 모달이 늦게 렌더되는 경우가 있어 동의 버튼/체크박스 등장까지 폴링.
-            is_terms_screen = False
-            poll_deadline = time.time() + 8
+            # 1) 진입 페이지 분기 — 3가지 상태 구분:
+            #    (a) 소셜 로그인 chooser — button[aria-label="kakao"] 존재. 반드시 클릭.
+            #    (b) 이용약관 화면 (title='이용 약관') — div.nfm-checkbox / '동의 및 계속'.
+            #        카카오 버튼이 없으므로 약관 동의 후 SSO 로 자동 redirect.
+            #    (c) 미상 — 폴백으로 카카오 버튼 클릭 시도.
+            #
+            #    2026-05-28 알리 변경: login.aliexpress.com 이 곧장
+            #    ug-login-page/login.html (chooser, title='Buy Products...') 로 착지한다.
+            #    이 페이지는 URL 에 'ug-login-page' 를 포함하지만 약관 체크박스가 없고
+            #    카카오 버튼이 존재한다. 과거엔 URL 에 'ug-login-page' 만 있으면 무조건
+            #    약관 화면으로 보고 카카오 버튼 클릭을 건너뛰어 SSO 로 못 넘어갔다.
+            #    → 카카오 버튼 존재 여부를 약관 판정보다 우선한다.
+            page_state = None  # 'kakao' | 'terms'
+            poll_deadline = time.time() + 10
             while time.time() < poll_deadline:
                 try:
-                    found = page.evaluate("""
+                    state = page.evaluate("""
                         () => {
                             const labels = ['동의 및 계속', '동의 및 시작'];
+                            const hasKakao = document.querySelectorAll('button[aria-label="kakao"]').length > 0;
                             const hasAgree = Array.from(document.querySelectorAll('*'))
                                 .some(el => el.children.length === 0
                                            && labels.includes((el.textContent || '').trim()));
                             const hasNfmCheck = document.querySelectorAll('div.nfm-checkbox').length > 0;
-                            const isUgLogin = location.href.includes('ug-login-page');
-                            return hasAgree || hasNfmCheck || isUgLogin;
+                            if (hasKakao) return 'kakao';
+                            if (hasAgree || hasNfmCheck) return 'terms';
+                            return null;
                         }
                     """)
-                    if found:
-                        is_terms_screen = True
+                    if state:
+                        page_state = state
                         break
                 except Exception:
                     pass
                 time.sleep(0.5)
 
-            if is_terms_screen:
+            if page_state == "terms":
                 log("이용약관 화면 감지 — 카카오 버튼 단계 건너뜀", "info")
             else:
-                # 일반 로그인 폼 — 카카오 버튼 클릭
+                # chooser / 일반 폼 / 미상 — 카카오 버튼 클릭
+                if page_state is None:
+                    log("로그인 진입 상태 미상 — 카카오 버튼 클릭 폴백 시도", "warn")
                 try:
                     page.click('button[aria-label="kakao"]', timeout=5000)
                     log("카카오 로그인 버튼 클릭", "ok")
