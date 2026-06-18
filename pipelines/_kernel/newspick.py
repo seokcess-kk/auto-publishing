@@ -75,7 +75,9 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
 
     # 1) 뉴스픽 세션 + 기사 수집 (sync_playwright 일회성 사용 후 해제)
     if not newspick.ensure_session():
-        log("뉴스픽 세션 없음 — Chrome(Profile 2)에서 partners.newspic.kr 로그인 필요", "error")
+        # 복구 안내(throttled 텔레그램)는 ensure_session 내부에서 정확한 명령으로
+        # 발송된다(python tools/newspick_manual_login.py). 여기선 ledger/요약용 로그만.
+        log("뉴스픽 세션 없음 — 수동 로그인 필요 (python tools/newspick_manual_login.py)", "error")
         notify_pipeline_result(cfg.name, 0, count, details="뉴스픽 세션 없음")
         return
 

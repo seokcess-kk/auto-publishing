@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import os
 import time
 
 from dotenv import load_dotenv
@@ -83,6 +84,15 @@ def _check_one(blog_name: str) -> tuple[bool, str]:
 
 def run() -> None:
     log("=== 티스토리 세션 keep-alive 시작 ===", "step")
+
+    # bridge 모드: 실제 발행은 사용자 Chrome 의 확장이 담당하고, 확장이 자체 6h
+    # keepalive(background.js sessionKeepalive)로 그 세션을 유지한다. Playwright 가
+    # tistory_shared 프로필을 여는 것은 (a) bridge 발행에 쓰이지 않는 세션이고
+    # (b) 사용자 Chrome 과 프로필 충돌로 launch 즉시 STATUS_BREAKPOINT 로 죽는다
+    # (2회 연속 실패의 원인). 따라서 bridge 모드에선 Playwright keepalive 를 skip.
+    if os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge":
+        log("bridge 모드 — 세션 keepalive 는 Chrome 확장이 담당. Playwright keepalive skip", "info")
+        return
 
     blogs = _collect_unique_blogs()
     if not blogs:

@@ -40,6 +40,12 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "data.go.kr 마이페이지에서 활용 상태 확인 / 재발급",
     ),
     (
+        # 뉴스픽 전용 — tistory 패턴보다 먼저 매칭돼야 올바른 복구 명령을 안내한다.
+        re.compile(r"뉴스픽\s*세션\s*없음|Kakao\s*SSO\s*로그인\s*실패|newspic", re.I),
+        "뉴스픽 Kakao 세션 만료",
+        "python tools/newspick_manual_login.py 로 수동 로그인",
+    ),
+    (
         re.compile(r"/auth/login|Kakao\s*로그인\s*실패|Kakao\s*페이지\s*전환\s*실패", re.I),
         "Kakao(티스토리) 세션 만료",
         "python -m tools.verify_tistory_login <blog>",

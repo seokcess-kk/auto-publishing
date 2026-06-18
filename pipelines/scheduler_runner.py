@@ -422,11 +422,57 @@ def _kill_other_scheduler_instances() -> int:
     return len(actually_killed)
 
 
+def _alert_downtime_gap() -> None:
+    """기동 시 직전 실행 이후 공백이 크면(=PC/스케줄러 장기 미가동) 텔레그램 경고.
+
+    06-13/14/17 처럼 PC 가 꺼져 스케줄러도 watchdog 도 안 돌면 그 공백은 어디에도
+    잡히지 않는다 (watchdog 도 같은 PC 에서 죽어있으므로). 복구(재기동) 시점에
+    마지막 ledger 실행과의 간격으로 이를 사후 surface 한다.
+
+    임계값: SCHEDULER_DOWNTIME_ALERT_HOURS (기본 12h). 야간 종료/재부팅 정도의
+    공백(<12h)은 정상으로 보고 알리지 않으며, 하루치 슬롯을 통째로 놓친 수준만 알린다.
+    """
+    try:
+        threshold_h = float(os.getenv("SCHEDULER_DOWNTIME_ALERT_HOURS", "12"))
+    except ValueError:
+        threshold_h = 12.0
+    try:
+        from datetime import datetime
+        from common.run_ledger import list_recent
+        recs = list_recent(days=60)
+        if not recs:
+            return
+        last = max((r.get("finished_at") or r.get("started_at") or "") for r in recs)
+        if not last:
+            return
+        gap_h = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600
+        if gap_h < threshold_h:
+            return
+        msg = (
+            f"⚠️ <b>[스케줄러 가동 공백]</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"마지막 실행 이후 <b>{gap_h:.1f}시간</b> 동안 파이프라인이 실행되지 않았습니다.\n"
+            f"• 마지막 실행: {last}\n"
+            f"• PC 절전/종료 또는 스케줄러 중단 추정 — 해당 시간대 발행 누락 가능"
+        )
+        log(f"[scheduler] 가동 공백 감지: {gap_h:.1f}h (마지막 {last})", "warn")
+        try:
+            from common.notifier import _send_telegram
+            _send_telegram(msg)
+        except Exception:
+            pass
+    except Exception as e:
+        log(f"[scheduler] 가동 공백 점검 오류 (무시): {e}", "warn")
+
+
 def main() -> None:
     log("=== 스케줄러 시작 ===", "step")
 
     # 다른 scheduler_runner 인스턴스가 떠있으면 즉시 정리 — 중복 발행 방지
     _kill_other_scheduler_instances()
+
+    # 장기 미가동(PC off 등) 후 복구라면 그 공백을 사후 알림
+    _alert_downtime_gap()
 
     # Tistory bridge 모드면 HTTP 서버를 daemon thread 로 임베드 — 별도 터미널 불필요
     if os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge":

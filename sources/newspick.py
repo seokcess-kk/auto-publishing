@@ -473,6 +473,24 @@ class NewspickSource:
         max_attempts: chromium startup race ('Target page closed') 에 한해 재시도.
             3s 백오프. 자동 스케줄 시간대에 launch 직후 page 가 닫혀버리는 패턴 회복용.
         """
+        def _auth_failed(reason: str) -> bool:
+            """인증 실패 — 로그 + throttled 텔레그램으로 정확한 복구 명령 안내 후 False.
+
+            뉴스픽 SESSION 은 session-only 라 토큰 만료 시 수동 재로그인 외 자동
+            복구가 불가능하다. 매 슬롯마다 같은 실패를 반복하므로 notify_login_required
+            의 24h throttle 로 하루 1회만 알린다 (스팸 방지).
+            """
+            log(reason, "error")
+            try:
+                from common.notifier import notify_login_required
+                notify_login_required(
+                    "뉴스픽",
+                    instructions="python tools/newspick_manual_login.py",
+                )
+            except Exception:
+                pass
+            return False
+
         for attempt in range(1, max_attempts + 1):
             try:
                 with self.profile.launch(headless=True) as context:
@@ -490,13 +508,11 @@ class NewspickSource:
                         # 토큰이 만료됐거나 최초 로그인 — Kakao SSO 전체 플로우 실행
                         log("간편로그인 미적용 — Kakao SSO 자동 로그인 시도", "warn")
                         if not self._kakao_login(context):
-                            log("Kakao SSO 로그인 실패", "error")
-                            return False
+                            return _auth_failed("Kakao SSO 로그인 실패")
 
                         # 재진입 확인
                         if not self._page_has_session(context, page):
-                            log("로그인은 성공했으나 SESSION 쿠키 미확보", "error")
-                            return False
+                            return _auth_failed("로그인은 성공했으나 SESSION 쿠키 미확보")
 
                     # SESSION 확보 완료 → requests 에 쿠키 주입
                     injected = self._inject_cookies(context)
@@ -508,8 +524,7 @@ class NewspickSource:
                     log("뉴스픽 세션 유효", "ok")
                     return True
 
-                log("requests 쪽 세션 검증 실패", "error")
-                return False
+                return _auth_failed("requests 쪽 세션 검증 실패")
             except Exception as e:
                 msg = str(e)
                 transient = ("Target page" in msg or
