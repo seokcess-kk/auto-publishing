@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -144,6 +145,70 @@ def _publish_chain(pub: ThreadsPublisher, kw: str, product: dict,
     )
 
 
+def _kill_child_chromiums() -> None:
+    """현재 프로세스의 자식 프로세스 트리(Playwright node driver→Chromium)를 정리.
+
+    알리는 persistent profile 이 아니라 비-persistent launch(고유 temp dir)라
+    common.browser_profile 의 profile-name 매칭 orphan 청소가 잡지 못한다.
+    검색 timeout 으로 워커 스레드를 버릴 때 직접 자식 트리를 끊어 Chromium
+    좀비를 막는다. (스케줄러가 파이프라인을 직렬 실행하므로 이 시점의
+    ms-playwright Chromium 은 이 실행분뿐 — 광범위 종료 위험 없음.)
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import subprocess as _sp
+        # 자식들(node driver 등)을 /T 로 트리째 종료. 이 명령을 수행하는
+        # powershell 자신($PID)은 제외해 명령이 중간에 죽지 않도록 한다.
+        ps_cmd = (
+            f"$pp={os.getpid()}; "
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.ParentProcessId -eq $pp -and $_.ProcessId -ne $PID } | "
+            "ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }"
+        )
+        _sp.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, timeout=15)
+    except Exception as e:
+        log(f"자식 Chromium 정리 실패 (무시): {e}", "warn")
+
+
+def _search_with_timeout(source, keyword: str, *, count: int,
+                         require_affiliate: bool, timeout_sec: int) -> list:
+    """source.search() 를 벽시계 상한 내에서 실행. 초과 시 브라우저 강제 정리 후 [].
+
+    알리 검색/브라우저 launch 가 드물게 무한 대기에 빠져(06-16 1800s timeout)
+    스케줄러의 무딘 30분 timeout 까지 메인 루프를 잡아먹는 일을 차단한다.
+    Windows 엔 SIGALRM 이 없어 데몬 스레드 + join(timeout) 으로 구현한다.
+    Playwright sync API 는 스레드 친화적이라 search 와 close 를 같은 워커
+    스레드에서 수행한다. 초과 시 워커는 버려지고(daemon), 남은 Chromium 은
+    명시적으로 정리한다.
+    """
+    box: dict = {"products": [], "error": None}
+
+    def _worker() -> None:
+        try:
+            box["products"] = source.search(
+                keyword, count=count, require_affiliate=require_affiliate)
+        except Exception as e:  # noqa: BLE001
+            box["error"] = e
+        finally:
+            try:
+                source.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_worker, name="ali-search", daemon=True)
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        log(f"알리 검색/브라우저가 {timeout_sec}s 초과 — 자식 Chromium 정리 후 중단", "error")
+        _kill_child_chromiums()
+        return []
+    if box["error"] is not None:
+        raise box["error"]
+    return box["products"] or []
+
+
 def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
     """알리 1건 크롤링 → Threads 발행."""
     from sources.itemscout_keywords import get_pool_status, mark_keywords_used
@@ -163,13 +228,17 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
             return
         kw = kws[0]
 
-    # 2) 알리 상품 1개 — sync_playwright 직렬화 위해 publisher 호출 전에 close
+    # 2) 알리 상품 1개 — sync_playwright 직렬화 위해 publisher 호출 전에 close.
+    #    무한 대기(06-16 1800s timeout) 방지 위해 벽시계 상한 가드로 감싼다.
+    #    search 내부에서 close 까지 수행하므로 여기선 별도 close 불필요.
     tracking_id = os.getenv("ALIEXPRESS_TRACKING_ID", "wordpress")
-    source = AliexpressSource(tracking_id=tracking_id)
     try:
-        products = source.search(kw, count=1, require_affiliate=True)
-    finally:
-        source.close()
+        search_timeout = int(os.getenv("ALIEXPRESS_SEARCH_TIMEOUT_SEC", "240"))
+    except ValueError:
+        search_timeout = 240
+    source = AliexpressSource(tracking_id=tracking_id)
+    products = _search_with_timeout(
+        source, kw, count=1, require_affiliate=True, timeout_sec=search_timeout)
 
     if not products:
         log(f"'{kw}' 상품/링크 수집 실패 또는 키워드 매칭 부족", "warn")

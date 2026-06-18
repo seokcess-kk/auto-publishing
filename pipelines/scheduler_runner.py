@@ -93,7 +93,72 @@ def _register(times_env: str, func: Callable, *args, **kwargs) -> int:
     return count
 
 
-def _safe_subprocess_call(module_name: str) -> None:
+# 일시적(네트워크/DNS) 실패 — 영구 실패와 구분해 재시도할 가치가 있는 표식.
+# 모두 "사이트에 닿지도 못한" 단계의 오류라, 재시도해도 중복 발행 부작용이 없다.
+_TRANSIENT_MARKERS = (
+    "ERR_NAME_NOT_RESOLVED",
+    "getaddrinfo failed",
+    "NameResolutionError",
+    "Temporary failure in name resolution",
+    "ERR_INTERNET_DISCONNECTED",
+    "ERR_NETWORK_CHANGED",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_TIMED_OUT",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_PROXY_CONNECTION_FAILED",
+    "Max retries exceeded",
+)
+
+
+def _is_transient(stderr_text: str) -> bool:
+    """stderr 에 일시적 네트워크/DNS 오류 표식이 있으면 True."""
+    return any(m in stderr_text for m in _TRANSIENT_MARKERS)
+
+
+def _to_text(raw) -> str:
+    """bytes|str|None → str (utf-8, 손상 문자 대체)."""
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.decode("utf-8", errors="replace")
+    return raw or ""
+
+
+def _kill_process_tree(pid: int) -> None:
+    """자식·손자 프로세스까지 강제 종료.
+
+    파이프라인 subprocess(python) 가 timeout 으로 죽어도 그가 띄운 Playwright
+    Chromium 은 살아남아 프로필/포트를 점유하고 이후 실행을 연쇄 오염시킨다
+    (06-16 aliexpress 1800s timeout 이후 잔존 Chromium → 후속 CDP 'Target page
+    closed' 패턴). Windows 는 taskkill /T(tree), POSIX 는 프로세스 그룹 killpg.
+    """
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True, timeout=15,
+            )
+        except Exception as e:
+            log(f"taskkill 트리 종료 실패 (무시) pid={pid}: {e}", "warn")
+    else:
+        import signal as _sig
+        try:
+            os.killpg(os.getpgid(pid), _sig.SIGKILL)
+        except Exception:
+            try:
+                os.kill(pid, _sig.SIGKILL)
+            except Exception:
+                pass
+
+
+def _notify_err(module_name: str, exc: Exception) -> None:
+    try:
+        from common.notifier import notify_error
+        notify_error(module_name, exc)
+    except Exception:
+        pass
+
+
+def _safe_subprocess_call(module_name: str, _attempt: int = 0) -> None:
     """파이프라인 모듈을 별도 python 프로세스로 실행.
 
     playwright sync_playwright 인스턴스/persistent profile 잠금 등 누적 부작용은
@@ -103,96 +168,115 @@ def _safe_subprocess_call(module_name: str) -> None:
     진단 입력으로 쓰인다. stderr 는 capture 해 ledger 의 stderr_tail 에
     저장한다 (Task Scheduler 환경에서는 어차피 stdout 이 어디에도 흐르지 않음).
 
-    timeout: .env SCHEDULE_SUBPROCESS_TIMEOUT (기본 1800초/30분).
+    timeout: .env SCHEDULE_SUBPROCESS_TIMEOUT (기본 1800초/30분). timeout 시
+    자식 프로세스 트리(Chromium 포함)를 강제 종료한다.
+
+    stderr 에 일시적 네트워크/DNS 오류 표식이 있으면 즉시 실패로 버리지 않고
+    SCHEDULE_TRANSIENT_BACKOFF_MIN 분 뒤 1회 재시도를 schedule 에 예약한다 —
+    최대 SCHEDULE_TRANSIENT_RETRIES 회. 재시도는 메인 루프를 sleep 으로 막지
+    않는다(블로킹 시 heartbeat 정지 → watchdog 가 스케줄러를 재기동시키므로).
     """
-    try:
-        timeout = int(os.getenv("SCHEDULE_SUBPROCESS_TIMEOUT", "1800"))
-    except ValueError:
-        timeout = 1800
+    def _int_env(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
+    timeout = _int_env("SCHEDULE_SUBPROCESS_TIMEOUT", 1800)
+    max_retries = _int_env("SCHEDULE_TRANSIENT_RETRIES", 2)
+    backoff_min = max(1, _int_env("SCHEDULE_TRANSIENT_BACKOFF_MIN", 5))
 
     from datetime import datetime as _dt
     from common.run_ledger import append_run
 
-    log(f"실행 (subprocess): {module_name}", "step")
+    is_retry = _attempt > 0
+    log(f"실행 (subprocess): {module_name}"
+        + (f" [일시오류 재시도 {_attempt}/{max_retries}]" if is_retry else ""), "step")
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     started_at = _dt.now()
+
+    # subprocess.run 대신 Popen — timeout 시 proc.pid 로 트리를 직접 정리하기 위함.
+    # stdin=DEVNULL: 자식이 부모의 isatty 를 상속해 _is_interactive()=True 로 오판,
+    #   무인 실행에서 manual login 모드로 빠지던 문제 차단.
+    # start_new_session: POSIX 에서 새 세션 → killpg 로 손자까지 한 번에 종료.
+    #   Windows 에선 무시되며(taskkill /T 로 트리 종료), False 이므로 무해.
     try:
-        # stdin=DEVNULL: 스케줄러가 TTY 에서 실행 중일 때 자식이 부모의 isatty 를
-        # 상속해 _is_interactive()=True 로 오판하는 걸 차단. 무인 실행에서 manual
-        # login 모드 진입 후 5분 timeout 으로 빠지던 문제 차단용.
-        # capture_output: stderr 마지막 N KB 를 ledger 에 저장하기 위함.
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-u", "-m", module_name],
-            env=env, timeout=timeout, check=False,
+            env=env,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=(sys.platform != "win32"),
         )
-    except subprocess.TimeoutExpired as e:
-        log(f"{module_name} timeout 초과 ({timeout}s) — 강제 종료됨", "error")
+    except Exception as e:
+        log(f"{module_name} subprocess 생성 예외:\n{traceback.format_exc()}", "error")
+        append_run(
+            module=module_name, started_at=started_at, finished_at=_dt.now(),
+            exit_code="exception", status="exception", stderr_tail=None, error=str(e),
+        )
+        _notify_err(module_name, e)
+        return
+
+    try:
+        _stdout_b, stderr_b = proc.communicate(timeout=timeout)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        log(f"{module_name} timeout 초과 ({timeout}s) — 프로세스 트리 강제 종료", "error")
+        _kill_process_tree(proc.pid)
+        try:
+            _stdout_b, stderr_b = proc.communicate(timeout=10)
+        except Exception:
+            stderr_b = b""
         append_run(
             module=module_name, started_at=started_at, finished_at=_dt.now(),
             exit_code="timeout", status="timeout",
-            stderr_tail=getattr(e, "stderr", None),
-            error=f"subprocess timeout {timeout}s",
+            stderr_tail=stderr_b, error=f"subprocess timeout {timeout}s",
         )
-        try:
-            from common.notifier import notify_error
-            notify_error(module_name, TimeoutError(f"subprocess timeout {timeout}s"))
-        except Exception:
-            pass
-        return
-    except Exception as e:
-        log(f"{module_name} subprocess 예외:\n{traceback.format_exc()}", "error")
-        append_run(
-            module=module_name, started_at=started_at, finished_at=_dt.now(),
-            exit_code="exception", status="exception",
-            stderr_tail=None, error=str(e),
-        )
-        try:
-            from common.notifier import notify_error
-            notify_error(module_name, e)
-        except Exception:
-            pass
+        _notify_err(module_name, TimeoutError(f"subprocess timeout {timeout}s"))
         return
 
-    # 대부분의 파이프라인은 내부 로직에서 publish 실패해도 sys.exit(0) 으로
-    # 끝나는 구조라 exit_code 만으로는 "발행이 실제로 됐는지" 알 수 없다.
-    # stderr 에 [ERROR] 라인이 남아 있으면 — 그리고 명시적인 성공 표식
-    # ("발행 성공"/"발행 완료"/"발행 ... 1/" 등) 이 함께 보이지 않으면 —
-    # exit 0 이어도 status 를 'failure' 로 강제해 daily_summary / 텔레그램
-    # 알림이 거짓 양성을 보내지 않게 한다.
-    status = "success" if proc.returncode == 0 else "failure"
-    if proc.returncode == 0:
-        try:
-            stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace") if isinstance(proc.stderr, (bytes, bytearray)) else (proc.stderr or "")
-        except Exception:
-            stderr_text = ""
-        if "[ERROR]" in stderr_text:
-            # 성공 마커가 보이면 일부 성공으로 본다 (보수적으로 success 유지)
-            success_markers = ("발행 성공", "발행 완료", "발행 완료:")
-            if not any(m in stderr_text for m in success_markers):
-                status = "failure"
-                log(f"{module_name} exit=0 이지만 stderr 에 [ERROR] 존재 — 'failure' 로 기록", "warn")
+    stderr_text = _to_text(stderr_b)
+
+    # 대부분의 파이프라인은 내부 logic 에서 publish 실패해도 sys.exit(0) 으로
+    # 끝나므로 exit_code 만으로는 "발행이 실제로 됐는지" 알 수 없다. stderr 에
+    # [ERROR] 가 있고 성공 표식("발행 성공"/"발행 완료") 이 없으면 exit 0 이어도
+    # 'failure' 로 강등해 거짓 양성 알림을 막는다.
+    status = "success" if returncode == 0 else "failure"
+    if returncode == 0 and "[ERROR]" in stderr_text:
+        success_markers = ("발행 성공", "발행 완료", "발행 완료:")
+        if not any(m in stderr_text for m in success_markers):
+            status = "failure"
+            log(f"{module_name} exit=0 이지만 stderr 에 [ERROR] 존재 — 'failure' 로 기록", "warn")
+
+    # 일시적 네트워크 오류 → 메인 루프를 막지 않는 1회 재시도 예약. 이번 시도는
+    # ledger/알림 보류 — 최종 시도만 기록해 daily_summary 가 한 슬롯=한 결과로 본다.
+    if status == "failure" and _attempt < max_retries and _is_transient(stderr_text):
+        log(f"{module_name} 일시적 네트워크 오류 감지 — {backoff_min}분 후 재시도 예약 "
+            f"({_attempt + 1}/{max_retries})", "warn")
+
+        def _retry_job(_m=module_name, _a=_attempt):
+            _safe_subprocess_call(_m, _a + 1)
+            return schedule.CancelJob  # 한 번만 실행 후 자기 제거
+
+        schedule.every(backoff_min).minutes.do(_retry_job)
+        return
 
     append_run(
         module=module_name, started_at=started_at, finished_at=_dt.now(),
-        exit_code=proc.returncode, status=status,
-        stderr_tail=proc.stderr,
+        exit_code=returncode, status=status, stderr_tail=stderr_b,
     )
 
     if status == "failure":
-        if proc.returncode != 0:
-            log(f"{module_name} 비정상 종료 (exit={proc.returncode})", "error")
-        try:
-            from common.notifier import notify_error
-            reason = (
-                f"exit code {proc.returncode}"
-                if proc.returncode != 0
-                else "stderr 에 [ERROR] 존재 (publish 실패 추정)"
-            )
-            notify_error(module_name, RuntimeError(reason))
-        except Exception:
-            pass
+        if returncode != 0:
+            log(f"{module_name} 비정상 종료 (exit={returncode})", "error")
+        reason = (
+            f"exit code {returncode}" if returncode != 0
+            else "stderr 에 [ERROR] 존재 (publish 실패 추정)"
+        )
+        if is_retry and _is_transient(stderr_text):
+            reason += f" (일시적 오류 {max_retries}회 재시도 후 실패)"
+        _notify_err(module_name, RuntimeError(reason))
 
 
 def _register_module(times_env: str, module_name: str) -> int:
