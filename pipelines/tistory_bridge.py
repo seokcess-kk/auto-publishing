@@ -28,6 +28,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,102 @@ from common.tistory_queue import (  # noqa: E402
 
 
 _DEFAULT_PORT = 5757
+
+# ─── 실패 알림 상태 (silent failure 방지) ────────────────────────────────────
+# bridge 모드(TISTORY_BRIDGE_WAIT_SEC=0)는 fire-and-forget 라 파이프라인이
+# "queued=성공"으로 끝나 실제 발행 실패를 알 수 없다. /fail 수신 시와 pending 적체
+# 감지 시 텔레그램으로 직접 경고해 그 사각지대를 드러낸다. 같은 유형 알림이 폭주하지
+# 않도록 종류별 쿨다운을 둔다.
+_ALERT_COOLDOWN_SEC = 600        # /fail 알림 최소 간격 10분
+_BACKLOG_ALERT_MINUTES = 15      # pending 이 이만큼 묵으면 적체 경고
+_BACKLOG_COOLDOWN_SEC = 1800     # 적체 알림 최소 간격 30분
+_last_alert_at: dict[str, float] = {}
+_alert_lock = threading.Lock()
+
+
+def _should_alert(kind: str, cooldown: int = _ALERT_COOLDOWN_SEC) -> bool:
+    """종류별 쿨다운 — True 면 즉시 알림 슬롯을 소비하고 발송 허용."""
+    now = time.time()
+    with _alert_lock:
+        if now - _last_alert_at.get(kind, 0.0) < cooldown:
+            return False
+        _last_alert_at[kind] = now
+        return True
+
+
+def _notify_publish_fail(item_id: str, error: str) -> None:
+    """발행 실패를 텔레그램으로 즉시 경고 (쿨다운 적용).
+
+    확장이 큐 항목을 claim 한 뒤 실패(/fail)한 경우를 잡는다. bridge 모드에선
+    파이프라인 쪽 알림이 없으므로 이게 실패를 알리는 유일한 경로.
+    """
+    try:
+        if not _should_alert("fail"):
+            return
+        from common.tistory_queue import get as _get, list_all as _list_all
+        from common.notifier import _send_telegram
+        item = _get(item_id) or {}
+        title = (item.get("title", "") or "")[:60]
+        blog = item.get("blog_name", "")
+        pending = len(_list_all("pending"))
+        failed = len(_list_all("failed"))
+        err = error or ""
+        low = err.lower()
+        hint = ""
+        if "no current window" in low or "탭 생성" in err:
+            hint = ("\n💡 Chrome 창이 모두 닫혀 있을 수 있습니다. 창을 하나 "
+                    "열어두면 자동 복구됩니다.")
+        elif "captcha" in low or "캡차" in err or "navigation timeout" in low:
+            hint = "\n💡 캡차 응답 누락 가능 — 텔레그램 캡차 답글을 확인하세요."
+        msg = (
+            f"⚠️ <b>[Tistory 발행 실패]</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 {title or '(제목 없음)'}\n"
+            f"🏷 블로그: {blog}\n"
+            f"❌ {err[:200]}\n"
+            f"📊 대기 {pending}건 / 실패 누적 {failed}건"
+            f"{hint}"
+        )
+        _send_telegram(msg)
+        log(f"[bridge] 발행 실패 텔레그램 경고 전송: {item_id[:8]}", "warn")
+    except Exception as e:
+        log(f"[bridge] 실패 알림 전송 오류 (무시): {e}", "warn")
+
+
+def _check_pending_backlog() -> None:
+    """pending 항목이 오래 처리되지 않으면(=확장이 polling 조차 못 함) 경고.
+
+    /fail 알림은 확장이 claim 후 실패한 경우만 잡는다. 확장 자체가 죽었거나 Chrome
+    이 꺼져 아무도 claim 하지 않으면 항목은 pending 으로 남고 /fail 도 안 온다 —
+    가장 조용한 중단. 이 경우를 가장 오래된 pending 의 나이로 감지한다.
+    """
+    try:
+        from common.tistory_queue import list_all as _list_all
+        pending = _list_all("pending")
+        if not pending:
+            return
+        oldest = min((p.get("queued_at") or "") for p in pending)
+        if not oldest:
+            return
+        try:
+            age_min = (datetime.now() - datetime.fromisoformat(oldest)).total_seconds() / 60
+        except ValueError:
+            return
+        if age_min < _BACKLOG_ALERT_MINUTES:
+            return
+        if not _should_alert("backlog", cooldown=_BACKLOG_COOLDOWN_SEC):
+            return
+        from common.notifier import _send_telegram
+        _send_telegram(
+            f"⚠️ <b>[Tistory 발행 정체]</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"대기 {len(pending)}건이 {int(age_min)}분째 발행되지 않았습니다.\n"
+            f"💡 Chrome 이 켜져 있고 'Auto Publishing' 확장이 활성인지, "
+            f"Chrome 창이 하나 열려 있는지 확인하세요."
+        )
+        log(f"[bridge] pending 적체 경고: {len(pending)}건 / {int(age_min)}분", "warn")
+    except Exception as e:
+        log(f"[bridge] 적체 점검 오류 (무시): {e}", "warn")
 
 
 def _resolve_blogs() -> list[str]:
@@ -221,6 +318,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             ok = mark_failed(item_id, error=err)
             log(f"[bridge] fail id={item_id[:8]} err={err[:80]}", "warn")
+            if ok:
+                # bridge 모드는 파이프라인 알림이 없으므로 여기서 직접 경고
+                _notify_publish_fail(item_id, err)
             self._json(200 if ok else 404, {"ok": ok})
             return
         if path == "/reset-stale":
@@ -281,6 +381,8 @@ def _stale_reset_loop() -> None:
                 log(f"[bridge] stale claimed {n}개 → pending 복원", "warn")
             # 캡차도 같이 — 10분 이상 답변 없는 pending 정리
             reset_stale_captcha(stale_minutes=10)
+            # 확장이 죽어 아무도 claim 못 하는 '조용한 중단' 감지
+            _check_pending_backlog()
         except Exception:
             pass
         time.sleep(30)

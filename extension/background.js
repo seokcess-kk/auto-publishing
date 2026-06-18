@@ -73,6 +73,28 @@ async function reportFail(id, error) {
 
 // ─── 작업 처리 ────────────────────────────────────────────────────────────────
 
+// 큐 항목용 탭을 연다. 서비스워커만 살아있고 모든 Chrome 창이 닫힌 상태에서는
+// chrome.tabs.create({url}) 가 "No current window" 예외로 실패한다 — 06-15 이후
+// 큐가 조용히 막혔던 주원인. 열린 normal 창이 있으면 windowId 를 명시해 그 창에
+// 탭을 만들고, 하나도 없으면 chrome.windows.create 로 창을 새로 띄워 자가복구한다.
+async function openItemTab(url) {
+  let wins = [];
+  try {
+    wins = await chrome.windows.getAll({ windowTypes: ["normal"] });
+  } catch (e) {
+    wins = [];
+  }
+  if (wins && wins.length > 0) {
+    const win = wins.find((w) => w.focused) || wins[0];
+    return await chrome.tabs.create({ windowId: win.id, url, active: true });
+  }
+  // 열린 창이 전혀 없음 → 새 창 생성. 사용자 방해 최소화 위해 focused:false.
+  // 캡차가 필요해지면 captcha-needed 핸들러가 windows.update 로 포커스한다.
+  console.warn("[bridge] 열린 Chrome 창 없음 → 새 창 생성 (자가복구)");
+  const win = await chrome.windows.create({ url, focused: false });
+  return win && win.tabs && win.tabs.length ? win.tabs[0] : null;
+}
+
 async function processOne() {
   console.log("[bridge] poll tick @", new Date().toISOString());
   if (!(await getEnabled())) {
@@ -97,11 +119,12 @@ async function processOne() {
 
   const url = `https://${item.blog_name}.tistory.com/manage/newpost/?type=post&_apid=${item.id}`;
   try {
-    const tab = await chrome.tabs.create({ url, active: true });
+    const tab = await openItemTab(url);
+    if (!tab || tab.id == null) throw new Error("탭/창 생성 결과 없음");
     await chrome.storage.local.set({ active_tab_id: tab.id });
     console.log("[bridge] 새 탭 열림 id=", tab.id);
   } catch (e) {
-    console.error("[bridge] chrome.tabs.create 실패:", e);
+    console.error("[bridge] 탭 생성 실패:", e);
     // tab open 실패 → 작업 취소 + fail 보고
     await reportFail(item.id, "탭 생성 실패: " + e.message);
     await setActiveItem(null);
