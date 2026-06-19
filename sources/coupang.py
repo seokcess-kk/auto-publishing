@@ -166,9 +166,12 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
 
             # 데스크톱 모드로 동작 — Chrome 기본 viewport / UA / sec-ch-ua 그대로 사용.
             # (모바일 viewport 강제는 Akamai 차단 트리거)
-            page.set_extra_http_headers({
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-            })
+            # Bright Data Browser API 는 헤더를 직접 관리하므로 override 가 금지된다
+            # ('Overriding Accept-Language headers forbidden'). 로컬 크롬에서만 설정.
+            if not bd_wss:
+                page.set_extra_http_headers({
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+                })
 
             # 쿠팡 메인 먼저 방문 (쿠키/세션 획득)
             log("쿠팡 메인 방문...", "info")
