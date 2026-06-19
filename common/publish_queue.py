@@ -224,6 +224,31 @@ def mark_status_bulk(results: dict, field: str,
     return count
 
 
+def mark_skipped_bulk(urls: list, field: str,
+                      queue_path: str = DEFAULT_QUEUE_PATH) -> int:
+    """여러 URL 의 field 를 'SKIP' 으로 표시해 대기열에서 영구 제외.
+
+    소유하지 않은 도메인(threads 등 SNS)은 Google/Naver 색인이 구조적으로 불가
+    (권한 없음/미등록)하므로, 매 실행마다 재시도(churn)하지 않도록 한 번 SKIP
+    처리한다. get_pending 은 'X' 만 반환하므로 SKIP 항목은 자동 제외된다.
+
+    Returns: 변경 건수
+    """
+    if field not in _FIELDS:
+        raise ValueError(f"알 수 없는 field: {field}")
+    url_set = set(urls)
+    data = _load(queue_path)
+    count = 0
+    for item in data:
+        if item.get("url", "") in url_set and item.get(field) not in ("O", "SKIP"):
+            item[field] = "SKIP"
+            item[f"{field}_status"] = "excluded_domain"
+            count += 1
+    if count:
+        _save(data, queue_path)
+    return count
+
+
 def get_newly_indexed_today(queue_path: str = DEFAULT_QUEUE_PATH) -> list:
     """오늘 날짜에 queued_at이 기록되어 있고 google_indexed="O"인 항목 반환.
 
@@ -251,5 +276,7 @@ def stats(queue_path: str = DEFAULT_QUEUE_PATH) -> dict:
     result = {"total": total}
     for field in _FIELDS:
         done = sum(1 for item in data if item.get(field) == "O")
-        result[field] = {"done": done, "pending": total - done}
+        skipped = sum(1 for item in data if item.get(field) == "SKIP")
+        pending = sum(1 for item in data if item.get(field, "X") == "X")
+        result[field] = {"done": done, "pending": pending, "skipped": skipped}
     return result

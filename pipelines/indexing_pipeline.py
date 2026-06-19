@@ -19,7 +19,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from common.logger import log
-from common.publish_queue import get_pending, mark_done_bulk, mark_status_bulk, stats
+from common.publish_queue import (
+    get_pending, mark_done_bulk, mark_status_bulk, mark_skipped_bulk, stats,
+)
 from common.notifier import notify_pipeline_result
 
 
@@ -27,6 +29,36 @@ SCHEDULE = {
     "env":  "SCHEDULE_INDEX",
     "func": "run",
 }
+
+# 소유하지 않은(=Google/Naver 색인 불가) 도메인. 본인 소유로 확인된 사이트만
+# 색인 제출이 의미 있으므로, threads 등 SNS URL 은 색인 대기열에서 제외한다.
+# (INDEX_EXCLUDE_DOMAINS 로 .env 에서 덮어쓰기 가능 — 콤마 구분)
+_DEFAULT_INDEX_EXCLUDE = (
+    "threads.com,threads.net,twitter.com,x.com,"
+    "instagram.com,pinterest.com,facebook.com"
+)
+
+
+def _excluded_index_domains() -> set:
+    raw = os.getenv("INDEX_EXCLUDE_DOMAINS", _DEFAULT_INDEX_EXCLUDE)
+    out = set()
+    for d in raw.split(","):
+        d = d.strip().lower()
+        if d.startswith("www."):
+            d = d[4:]
+        if d:
+            out.add(d)
+    return out
+
+
+def _indexable(url: str) -> bool:
+    """색인 대상(소유 도메인)인지. 제외 도메인이면 False."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return not any(host == d or host.endswith("." + d)
+                   for d in _excluded_index_domains())
 
 
 def _submit_google(pending: list) -> list:
@@ -70,16 +102,26 @@ def _submit_naver(pending: list) -> list:
         return []
 
 
+def _filter_indexable(pending: list, field: str) -> list:
+    """미소유 도메인(threads 등)을 SKIP 처리해 대기열에서 영구 제외하고,
+    실제 색인 대상(소유 사이트) 목록만 반환한다."""
+    excluded = [it.get("url", "") for it in pending if not _indexable(it.get("url", ""))]
+    if excluded:
+        n = mark_skipped_bulk(excluded, field)
+        log(f"[색인] 미소유 도메인 {n}건 제외(SKIP) — {field}", "info")
+    return [it for it in pending if _indexable(it.get("url", ""))]
+
+
 def run() -> None:
     """색인 등록 파이프라인 1회 실행."""
     log("=== 색인 등록 파이프라인 시작 ===", "step")
 
     log("=== 1단계: Google 색인 제출 ===", "step")
-    google_pending = get_pending("google_indexed")
+    google_pending = _filter_indexable(get_pending("google_indexed"), "google_indexed")
     google_ok = _submit_google(google_pending)
 
     log("=== 2단계: Naver 색인 제출 ===", "step")
-    naver_pending = get_pending("naver_indexed")
+    naver_pending = _filter_indexable(get_pending("naver_indexed"), "naver_indexed")
     naver_ok = _submit_naver(naver_pending)
 
     log(f"큐 통계: {stats()}", "info")
