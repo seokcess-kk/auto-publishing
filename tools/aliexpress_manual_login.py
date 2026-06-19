@@ -40,7 +40,7 @@ _USER_AGENT = (
 )
 
 
-def collect_and_save_state() -> bool:
+def collect_and_save_state(timeout_sec: int = 600) -> bool:
     from playwright.sync_api import sync_playwright
 
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,7 @@ def collect_and_save_state() -> bool:
 
         logged_in = False
         last_status = ""
-        deadline = _t.time() + 600  # 최대 10분 대기
+        deadline = _t.time() + timeout_sec  # 로그인 대기 제한 (기본 10분, --timeout)
         while _t.time() < deadline:
             logged_in = _portals_logged_in()
             status = ("✓ 로그인 확인됨 (portals 제휴 접근 성공) — 저장합니다"
@@ -176,5 +176,10 @@ def collect_and_save_state() -> bool:
 
 
 if __name__ == "__main__":
-    ok = collect_and_save_state()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--timeout", type=int, default=600,
+                    help="로그인 대기 제한시간(초). 기본 600(10분)")
+    args = ap.parse_args()
+    ok = collect_and_save_state(timeout_sec=args.timeout)
     sys.exit(0 if ok else 1)
