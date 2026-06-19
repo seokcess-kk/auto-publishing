@@ -134,20 +134,33 @@ def _start_chrome_mobile(user_data_dir: str = "") -> subprocess.Popen:
 
 def _crawl_with_local_chrome(keyword: str, count: int = 10,
                              channel_id: str = "") -> list:
-    """로컬 크롬 CDP 연결로 쿠팡 모바일 크롤링."""
+    """쿠팡 검색 크롤링.
+
+    COUPANG_BRIGHTDATA_WSS 가 설정돼 있으면 Bright Data Scraping Browser
+    (Akamai 우회 인프라) 에 CDP 로 연결하고, 없으면 로컬 크롬을 띄워 연결한다.
+    Akamai 가 로컬 크롬 검색을 'Access Denied(403)' 로 막을 때 Bright Data 경로로
+    우회한다. 추후 파트너스 API 승인 시 COUPANG_USE_API_FIRST=true 로 API 우선.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         log("playwright 미설치: pip install playwright", "warn")
         return []
 
-    proc = _start_chrome_mobile()
+    bd_wss = os.getenv("COUPANG_BRIGHTDATA_WSS", "").strip()
+    proc = None
     products = []
 
     try:
+        if not bd_wss:
+            proc = _start_chrome_mobile()
         with sync_playwright() as p:
-            # 실행 중인 크롬에 CDP로 연결
-            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+            if bd_wss:
+                log("쿠팡: Bright Data Scraping Browser 연결 (Akamai 우회)", "info")
+                browser = p.chromium.connect_over_cdp(bd_wss)
+            else:
+                # 로컬 크롬에 CDP 로 연결
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             page    = context.new_page()
 
@@ -190,8 +203,9 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
     except Exception as e:
         log(f"크롬 CDP 크롤링 오류: {e}", "error")
     finally:
-        proc.terminate()
-        time.sleep(0.5)
+        if proc is not None:
+            proc.terminate()
+            time.sleep(0.5)
 
     return products
 
@@ -350,7 +364,7 @@ class CoupangSource:
     """
 
     def __init__(self, access_key: str = "", secret_key: str = "",
-                 use_api_first: bool = False,
+                 use_api_first: "bool | None" = None,
                  channel_id: str = ""):
         """
         Args:
@@ -366,6 +380,10 @@ class CoupangSource:
             ACCESS_KEY = access_key
         if secret_key:
             SECRET_KEY = secret_key
+        # 미지정 시 env 로 결정 — 파트너스 API 승인 후 COUPANG_USE_API_FIRST=true
+        # 한 줄로 크롤링(Bright Data) → API 우선 전환 가능 (코드 수정 불필요).
+        if use_api_first is None:
+            use_api_first = os.getenv("COUPANG_USE_API_FIRST", "false").lower() == "true"
         self.use_api_first = use_api_first
         self.channel_id    = channel_id or CHANNEL_ID
 
