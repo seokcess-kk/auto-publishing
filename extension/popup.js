@@ -57,5 +57,13 @@ document.getElementById("poll-now").addEventListener("click", async () => {
   setTimeout(refresh, 500);
 });
 
+document.getElementById("clear-active").addEventListener("click", async () => {
+  // stuck 된 활성 작업 수동 해제 (이미 발행됐는데 active 가 안 풀리는 경우)
+  try {
+    await chrome.runtime.sendMessage({ type: "clear-active" });
+  } catch (e) {}
+  setTimeout(refresh, 300);
+});
+
 refresh();
 setInterval(refresh, 3000);

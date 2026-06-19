@@ -104,8 +104,23 @@ async function processOne() {
 
   const active = await getActiveItem();
   if (active) {
-    console.log("[bridge] 활성 작업 진행 중:", active.id?.slice(0, 8), "— 새 작업 claim 건너뜀");
-    return;
+    // 활성 작업이 유효한지 점검 — 그 탭이 닫혔으면 stale 로 보고 해제한다.
+    // 발행이 끝났는데(또는 사용자가 탭을 닫았는데) active 가 안 풀려 이후 모든
+    // 신규 claim 을 영구히 막던 문제(같은 글 반복/정지) 자가치유.
+    const s = await chrome.storage.local.get("active_tab_id");
+    let tabAlive = false;
+    if (s.active_tab_id != null) {
+      try { await chrome.tabs.get(s.active_tab_id); tabAlive = true; }
+      catch (e) { tabAlive = false; }
+    }
+    if (tabAlive) {
+      console.log("[bridge] 활성 작업 진행 중:", active.id?.slice(0, 8), "— 새 작업 claim 건너뜀");
+      return;
+    }
+    console.warn("[bridge] 활성 작업의 탭이 없음 — stale 로 판단해 해제:", active.id?.slice(0, 8));
+    await setActiveItem(null);
+    await chrome.storage.local.remove("active_tab_id");
+    // 아래로 진행해 새 작업 claim
   }
 
   const item = await fetchNext();
@@ -170,6 +185,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === "poll-now") {
       processOne().catch(console.warn);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === "clear-active") {
+      // 팝업의 '활성 작업 해제' — stuck 된 active 를 수동으로 비운다.
+      await setActiveItem(null);
+      await chrome.storage.local.remove("active_tab_id");
+      console.warn("[bridge] 활성 작업 수동 해제됨");
       sendResponse({ ok: true });
       return;
     }
