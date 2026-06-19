@@ -468,7 +468,28 @@ class AliexpressSource:
             except Exception:
                 log(f"상품 카드 렌더 미확인: {keyword}", "warn")
 
+            # 파싱 — 알리는 anti-bot 으로 카드 없는 빈 페이지를 간헐적으로 준다
+            # (captcha 도 없이). 같은 페이지 재파싱은 소용없으므로, 0개면 홈
+            # 워밍업으로 세션을 "사람처럼" 만든 뒤 검색 URL 을 재네비게이션한다.
             products = self._parse_cards_from_dom(count)
+            for attempt in range(1, 3):  # 최대 2회 재네비게이션
+                if products or self._is_captcha_page():
+                    break
+                log(f"검색 0개 — 워밍업 후 재시도 {attempt}/2: {keyword}", "info")
+                self._warmup_session()       # 홈 방문으로 세션 워밍
+                time.sleep(1)
+                if not self._goto_with_retry(url):
+                    continue
+                time.sleep(2)
+                if self._is_captcha_page():
+                    break
+                try:
+                    self._page.wait_for_selector(
+                        ".search-item-card-wrapper-gallery", timeout=12000)
+                except Exception:
+                    pass
+                products = self._parse_cards_from_dom(count)
+
             log(f"알리 검색 완료: {len(products)}개 ({keyword})", "ok")
             return products
         except Exception as e:
