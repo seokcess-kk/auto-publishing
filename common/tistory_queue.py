@@ -43,6 +43,15 @@ QUEUE_PATH = _BASE_DIR / "data" / "tistory_queue.json"
 _LOCK = threading.Lock()
 _RETENTION_DAYS = 7
 
+# 동일 항목이 claim → (미완료) → stale_reset 재pending → 재claim 으로 무한 루프
+# 도는 것을 막는 상한. claim 마다 claim_count 를 올리고, 이 횟수를 넘으면 서빙하지
+# 않고 영구 'failed' 처리한다. (확장이 캡차 미해결 등으로 완료 못 한 항목이 같은
+# 글쓰기를 반복 요청하던 문제 방지.)
+try:
+    _MAX_CLAIMS = int(os.getenv("TISTORY_MAX_CLAIMS", "3"))
+except ValueError:
+    _MAX_CLAIMS = 3
+
 # ─── DKAPTCHA 답안 in-memory store ────────────────────────────────────────────
 # 캡차 답안은 ephemeral 하므로 파일 영속 불필요. bridge 프로세스 메모리만 사용.
 # {item_id: {tg_message_id, sent_at}} — 텔레그램에 보낸 캡차 메시지 매핑
@@ -146,6 +155,7 @@ def enqueue(*, blog_name: str, title: str, content: str,
         "queued_at":      datetime.now().isoformat(timespec="seconds"),
         "status":         "pending",
         "claimed_at":     None,
+        "claim_count":    0,
         "result_url":     "",
         "result_post_id": "",
         "error":          "",
@@ -158,15 +168,31 @@ def enqueue(*, blog_name: str, title: str, content: str,
 
 
 def claim_next() -> Optional[dict]:
-    """다음 pending 항목을 'claimed' 로 마킹하고 반환. extension 이 호출."""
+    """다음 pending 항목을 'claimed' 로 마킹하고 반환. extension 이 호출.
+
+    claim_count 가 _MAX_CLAIMS 이상인 항목(반복 claim 후에도 발행 미완료)은
+    서빙하지 않고 'failed' 로 영구 처리해 무한 루프를 끊는다.
+    """
     with _LOCK:
         items = _load()
+        dirty = False
         for it in items:
-            if it.get("status") == "pending":
-                it["status"] = "claimed"
-                it["claimed_at"] = datetime.now().isoformat(timespec="seconds")
-                _save(items)
-                return dict(it)
+            if it.get("status") != "pending":
+                continue
+            claims = int(it.get("claim_count", 0) or 0)
+            if claims >= _MAX_CLAIMS:
+                it["status"] = "failed"
+                it["claimed_at"] = None
+                it["error"] = f"{_MAX_CLAIMS}회 claim 후 발행 미완료 — 루프 방지로 자동 중단"
+                dirty = True
+                continue
+            it["claim_count"] = claims + 1
+            it["status"] = "claimed"
+            it["claimed_at"] = datetime.now().isoformat(timespec="seconds")
+            _save(items)
+            return dict(it)
+        if dirty:
+            _save(items)
         return None
 
 
