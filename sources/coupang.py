@@ -164,6 +164,19 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             page    = context.new_page()
 
+            # 이미지/CSS/폰트/미디어 차단 — 상품 데이터는 HTML(+script 렌더)에 있어
+            # 파싱엔 불필요. 전송량(=Bright Data 비용) 절감. document/script/xhr/fetch
+            # 는 React 렌더·Akamai 센서에 필요하므로 유지한다.
+            _block_types = {"image", "media", "font", "stylesheet"}
+            try:
+                page.route(
+                    "**/*",
+                    lambda r: (r.abort() if r.request.resource_type in _block_types
+                               else r.continue_()),
+                )
+            except Exception as e:
+                log(f"리소스 차단 설정 실패(무시): {e}", "info")
+
             # 데스크톱 모드로 동작 — Chrome 기본 viewport / UA / sec-ch-ua 그대로 사용.
             # (모바일 viewport 강제는 Akamai 차단 트리거)
             # Bright Data Browser API 는 헤더를 직접 관리하므로 override 가 금지된다
