@@ -870,3 +870,110 @@ def generate_product_pick_reasons(keyword: str, products: list) -> list:
     if len(lines) >= n:
         return lines[:n]
     return lines + [""] * (n - len(lines))
+
+
+def generate_newspick_title(raw_title: str, category: str = "") -> str:
+    """뉴스픽 기사 원문 제목을 검색·클릭 친화 제목으로 재작성.
+
+    원문 헤드라인을 그대로 발행하면 같은 기사를 올린 수많은 블로그와 중복돼
+    SERP/피드에서 묻힌다. 의미·사실은 보존하되 호기심 갭·구체성을 더한
+    30~45자 제목으로 바꾼다. 실패/거부 시 빈 문자열 → 호출 측이 원문 폴백.
+    """
+    if not raw_title:
+        return ""
+    cat_part = f" / 카테고리 '{category}'" if category else ""
+    prompt = (
+        f"뉴스 기사 원문 제목 '{raw_title}'{cat_part} 를 검색·클릭을 더 유도하는 "
+        f"블로그 제목으로 다시 쓰세요.\n\n"
+        f"제약 (반드시 지킬 것):\n"
+        f"- 정확히 30~45자 (45자 초과 금지)\n"
+        f"- 원문의 핵심 의미·사실 유지 (없는 내용 지어내기 금지)\n"
+        f"- 원문과 단어가 최대한 겹치지 않게 표현을 바꿔 차별화\n"
+        f"- 호기심 갭·구체성·숫자 중 1가지로 클릭 유도\n"
+        f"- 마침표·따옴표·이모지·해시태그·괄호 라벨·마크다운 금지\n"
+        f"- 자극적 낚시성 단어(충격/경악/헉) 금지\n"
+        f"- 제목 1줄만 출력 (메타 설명 금지)"
+    )
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 뉴스픽 제목 재작성 ({provider}): {raw_title[:30]}", "step")
+    raw = generate_text(prompt, provider=provider, max_len=60)
+    cleaned = _clean_ai_output(raw)
+    if not cleaned:
+        return ""
+    if any(tok in cleaned for tok in _TITLE_FORBIDDEN_TOKENS):
+        return ""
+    if cleaned.count("\n") >= 2:
+        return ""
+    first = cleaned.split("\n")[0].strip(" \t-•·\"'")
+    if not first or any(kw in first for kw in _TITLE_META_KEYWORDS):
+        return ""
+    if len(first) > 45:
+        first = first[:45].rsplit(" ", 1)[0] if " " in first[:45] else first[:45]
+    if len(first) < 18:
+        return ""
+    return first
+
+
+def generate_newspick_article(raw_title: str, category: str = "") -> str:
+    """뉴스픽 기사 제목으로 검색 색인용 본문(HTML) 생성.
+
+    뉴스픽 원문 본문은 수집되지 않으므로(소스가 title/링크만 제공) 제목을
+    근거로 '왜 이 소식이 화제인지' 맥락·궁금증을 풀어쓴 400~600자 본문을
+    만든다. 목적:
+      - thin content 탈출 (검색 색인·체류시간 확보)
+      - 단정/허위 사실 생성 금지 — 제목에서 알 수 있는 범위의 맥락만
+      - <h2> 소제목 + <p> 단락 구조 (SEO heading 신호)
+
+    링크·CTA·해시태그는 호출 측(파이프라인)이 별도 부착한다.
+    실패 시 빈 문자열 → 호출 측이 기존 단순 구조로 폴백.
+    """
+    if not raw_title:
+        return ""
+    cat_part = f" ({category} 카테고리)" if category else ""
+    prompt = (
+        f"뉴스 기사 제목 '{raw_title}'{cat_part} 에 대한 한국어 블로그 본문을 "
+        f"HTML 로 작성하세요. 원문 본문은 제공되지 않으니, 제목에서 알 수 있는 "
+        f"범위의 맥락·배경·사람들이 궁금해할 포인트를 풀어 쓰세요.\n\n"
+        f"출력 형식 (HTML, 이 구조):\n"
+        f"<p>도입 — 이 소식이 왜 화제인지 2~3문장</p>\n"
+        f"<h2>핵심 포인트</h2>\n"
+        f"<p>궁금증을 자아내는 배경·맥락 2~3문장</p>\n"
+        f"<h2>왜 주목받나</h2>\n"
+        f"<p>독자 관점의 의미·반응 2~3문장</p>\n\n"
+        f"제약 (반드시 지킬 것):\n"
+        f"- 전체 400~600자\n"
+        f"- 구체적 수치·인용·날짜·실명 발언을 지어내지 말 것. 단정 대신 "
+        f"'~로 알려졌다', '~해 화제다', '~라는 반응이 나온다' 같은 표현 사용\n"
+        f"- <p> 와 <h2> 태그만 사용 (다른 태그·마크다운·코드블록 금지)\n"
+        f"- 마지막에 링크·CTA·해시태그 넣지 말 것 (호출 측이 별도 추가)\n"
+        f"- 본문 HTML 만 출력 (메타 설명·인사말 금지)"
+    )
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 뉴스픽 본문 생성 ({provider}): {raw_title[:30]}", "step")
+    if provider == "claude":
+        text = _generate_with_claude(prompt)
+    else:
+        text = _generate_with_gemini(prompt)
+    if not text:
+        fallback = "gemini" if provider == "claude" else "claude"
+        log(f"{provider} 실패, {fallback} 폴백", "warn")
+        if fallback == "claude":
+            text = _generate_with_claude(prompt)
+        else:
+            text = _generate_with_gemini(prompt)
+    if not text or _looks_like_refusal(text):
+        return ""
+
+    import re as _re
+    body = text.strip()
+    # 코드펜스 제거
+    body = _re.sub(r"^```[a-zA-Z]*\n?", "", body)
+    body = body.replace("```", "").strip()
+    body = _BOLD_RE.sub(r"\1", body)
+    # 위험 태그 방어 제거
+    body = _re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", "", body)
+    # <p>/<h2> 가 전혀 없으면 줄단위로 <p> 래핑해 최소 구조 보장
+    if "<p" not in body and "<h2" not in body:
+        paras = [p.strip() for p in body.split("\n") if p.strip()]
+        body = "".join(f"<p>{p}</p>" for p in paras)
+    return body.strip()

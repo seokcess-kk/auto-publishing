@@ -20,7 +20,6 @@ from common.product_card import (
     render_product_card,
 )
 from sources.newspick import NewspickSource
-from sources.gemini_generator import GeminiGenerator
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _HISTORY_PATH = os.path.join(_BASE_DIR, "data", "newspick_published.json")
@@ -71,7 +70,6 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
     순서로 직렬화해야 한다.
     """
     newspick = NewspickSource(referral_code=os.getenv("NEWSPICK_REFERRAL", ""))
-    gemini   = GeminiGenerator() if use_ai_summary else None
 
     # 1) 뉴스픽 세션 + 기사 수집 (sync_playwright 일회성 사용 후 해제)
     if not newspick.ensure_session():
@@ -123,11 +121,11 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
     last_url = ""
     try:
         for article, product in zip(articles, products):
-            title   = article["title"]
+            raw_title = article["title"]
 
-            # 이미 발행된 기사 건너뜀 (NinjaFirewall 중복 차단 방지)
-            if title in published_history:
-                log(f"[뉴스픽] 중복 기사 건너뜀: {title}", "info")
+            # 중복 판정은 원문 제목 기준 (재작성 제목은 매번 달라짐)
+            if raw_title in published_history:
+                log(f"[뉴스픽] 중복 기사 건너뜀: {raw_title}", "info")
                 skipped_dup += 1
                 continue
 
@@ -153,29 +151,69 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             intro = random.choice(intros)
             outro = random.choice(outros)
 
-            content = (
-                f'<p>{intro}</p>\n'
-                f'<p><a href="{article["short_url"]}" target="_blank">{title}</a></p>'
-            )
-            if gemini and article.get("summary"):
-                summary = gemini.summarize(article["summary"])
-                content += f"\n<p>{summary}</p>"
-            content += f"\n<p>{outro}</p>"
+            # 발행 제목 — 원문 헤드라인은 중복 클러스터에 묻히므로 AI 후킹 재작성
+            display_title = raw_title
+            if use_ai_summary:
+                try:
+                    from common.ai_intro import generate_newspick_title
+                    display_title = (generate_newspick_title(raw_title, category)
+                                     or raw_title)
+                except Exception as e:
+                    log(f"[뉴스픽] 제목 재작성 예외: {e}", "warn")
+
+            link_url = article.get("short_url") or article.get("url", "")
+
+            # 본문 — thin content 탈출용 AI 본문(<h2>+<p>) 생성, 실패 시 단순 구조
+            ai_body = ""
+            if use_ai_summary:
+                try:
+                    from common.ai_intro import generate_newspick_article
+                    ai_body = generate_newspick_article(raw_title, category)
+                except Exception as e:
+                    log(f"[뉴스픽] 본문 생성 예외: {e}", "warn")
+
+            parts = [f"<p>{intro}</p>"]
+            if ai_body:
+                parts.append(ai_body)
+            # 원문 전체 기사 클릭 CTA (조회수→뉴스픽 클릭 수익 유지)
+            if link_url:
+                parts.append(
+                    f'<p style="margin:18px 0;padding:14px 16px;background:#f6f8ff;'
+                    f'border-left:4px solid #3b5bdb;border-radius:6px;font-weight:600;">'
+                    f'👉 <a href="{link_url}" target="_blank" rel="nofollow">'
+                    f'{raw_title} — 전체 기사 보기</a></p>'
+                )
+            parts.append(f"<p>{outro}</p>")
+            content = "\n".join(parts)
 
             # 본문 하단에 쿠팡 추천 상품 카드 + 파트너스 고지 (난독화 모드 default)
             if product:
                 content += render_product_card(product)
 
-            # AI 관련 태그 3개 + 정적 태그 2개 = 총 5개
+            # 정적 2 + AI 관련 3 + 네이버 연관검색어(트렌드) 최대 3 = 검색 태그 강화
             from common.ai_intro import generate_related_tags
             ai_tags = generate_related_tags(
-                title, context=f"{category} 카테고리", n=3,
+                raw_title, context=f"{category} 카테고리", n=3,
                 exclude=[category, "뉴스픽"],
             )
             tags = [category, "뉴스픽"] + ai_tags
+            # 실시간 연관검색어 태그 — 죽어있던 tag_generator 활용 (실패 무해)
+            try:
+                from common import tag_generator
+                seed = ai_tags[0] if ai_tags else category
+                related = tag_generator.tags_to_plain(
+                    tag_generator.filter_forbidden(
+                        tag_generator.from_naver_related(seed, limit=3)
+                    )
+                )
+                for t in related:
+                    if t and t not in tags and len(tags) < 8:
+                        tags.append(t)
+            except Exception as e:
+                log(f"[뉴스픽] 연관검색어 태그 예외: {e}", "warn")
 
             result = publisher.post(
-                title=title,
+                title=display_title,
                 content=content,
                 tags=tags,
                 image_url=article.get("image", ""),
@@ -184,13 +222,13 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             if result.success:
                 published += 1
                 log(f"[{published}/{count}] 발행 완료: {result.url}", "ok")
-                published_history.add(title)
+                published_history.add(raw_title)
                 _save_history(published_history)
                 if result.url:
                     last_url = result.url
                     from common.publish_queue import add_url as _add_url
                     _plat = "tistory" if "tistory" in result.url else "wordpress"
-                    _add_url(result.url, platform=_plat, title=title)
+                    _add_url(result.url, platform=_plat, title=display_title)
 
             time.sleep(random.uniform(*cfg.sleep_range))
     finally:

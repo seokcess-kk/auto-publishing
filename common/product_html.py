@@ -36,33 +36,92 @@ def _build_meta_html(product: dict, meta_fields: List[str]) -> str:
     return " · ".join(parts)
 
 
+def _parse_count(val) -> int:
+    """'1,513' / '5,000+' / '' → 정수. 숫자가 없으면 0."""
+    if not val:
+        return 0
+    import re as _re
+    digits = _re.sub(r"[^\d]", "", str(val))
+    return int(digits) if digits else 0
+
+
+def sort_products_by_popularity(products: list) -> list:
+    """리뷰수(쿠팡)/판매량(알리) 내림차순 정렬 — 베스트셀러를 1위(상단/CTA)로.
+
+    검색 원순서 대신 사회적 증거가 가장 강한 상품을 맨 앞으로 보내 1위 CTA 와
+    상단 카드의 클릭·전환을 높인다. 동점·결측은 원래 순서 유지(stable sort).
+    pick_reason 인덱스와 어긋나지 않도록 소스 search() 단계에서 호출해야 한다.
+    """
+    if not products:
+        return products
+    return sorted(
+        products,
+        key=lambda p: max(_parse_count(p.get("review_count")),
+                          _parse_count(p.get("sales_num"))),
+        reverse=True,
+    )
+
+
 def _build_price_html(product: dict, theme: ProductTheme) -> str:
-    """가격 HTML 생성 (할인 표시는 theme.show_discount 에 따라)."""
+    """가격 HTML — 정가(취소선) → 할인가(강조) → 할인율(배지) 앵커링.
+
+    정가/할인율은 theme.show_discount 가 True 이고 데이터가 있을 때만 노출하므로
+    데이터가 없는 상품은 기존처럼 가격만 표시(비파괴).
+    """
     price    = product.get("price", "")
+    original = product.get("original_price", "")
     discount = product.get("discount_rate", "")
     html = ""
-    if theme.show_discount and discount:
+    if theme.show_discount and original and original != price:
         html += (
             f'<span style="color:#999;text-decoration:line-through;'
-            f'font-size:13px;margin-right:6px;">{discount}</span>'
+            f'font-size:13px;margin-right:6px;">{original}</span>'
         )
     if price:
         html += (
             f'<span style="color:{theme.accent_color};font-size:18px;'
             f'font-weight:bold;">{price}</span>'
         )
+    if theme.show_discount and discount:
+        html += (
+            f'<span style="display:inline-block;margin-left:6px;padding:1px 6px;'
+            f'background:{theme.accent_color};color:#fff;font-size:12px;'
+            f'font-weight:700;border-radius:4px;vertical-align:middle;">{discount}↓</span>'
+        )
     return html
 
 
 def _build_card(idx: int, product: dict, theme: ProductTheme) -> str:
-    """단일 상품 카드 HTML."""
+    """단일 상품 카드 HTML.
+
+    카드 전체가 제휴 링크(<a>)이며, 내부에는 버튼처럼 보이는 <span> 을 둔다
+    (<a> 중첩은 비표준이라 금지). 카드 어디를 눌러도 제휴 링크로 이동하지만
+    버튼 어포던스가 있어야 모바일 탭 전환이 오른다. arrival_time(빠른배송)이
+    있으면 신뢰·긴급 배지로 노출.
+    """
     img     = product.get("image", "")
     aff_url = product.get("affiliate_url", "")
     name    = product.get("name", "")
+    arrival = (product.get("arrival_time", "") or "").strip()
     price_html = _build_price_html(product, theme)
     meta_html  = _build_meta_html(product, theme.meta_fields)
+
+    arrival_html = ""
+    if arrival:
+        arrival_html = (
+            f'<div style="margin-bottom:4px;"><span style="display:inline-block;'
+            f'padding:1px 7px;background:#eafaf1;color:#1a8f4d;font-size:11px;'
+            f'font-weight:700;border-radius:4px;">🚀 {arrival}</span></div>'
+        )
+
+    button_html = (
+        f'<span style="display:inline-block;align-self:flex-start;margin-top:8px;'
+        f'padding:7px 16px;background:{theme.accent_color};color:#fff;font-size:12px;'
+        f'font-weight:700;border-radius:6px;">최저가 보기 ▶</span>'
+    )
+
     return (
-        f'<a href="{aff_url}" target="_blank" rel="nofollow" '
+        f'<a href="{aff_url}" target="_blank" rel="nofollow sponsored noopener" '
         f'style="text-decoration:none;color:inherit;display:block;margin:0 auto 14px auto;max-width:680px;">'
         f'<div style="display:flex;border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fff;'
         f'box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
@@ -70,8 +129,10 @@ def _build_card(idx: int, product: dict, theme: ProductTheme) -> str:
         f'<div style="flex:1;padding:12px 14px;display:flex;flex-direction:column;justify-content:center;">'
         f'<div style="font-size:13px;font-weight:600;line-height:1.4;color:#333;margin-bottom:6px;">'
         f'{idx+1}. {name}</div>'
+        f'{arrival_html}'
         f'<div style="margin-bottom:4px;">{price_html}</div>'
         f'<div style="font-size:11px;color:#888;">{meta_html}</div>'
+        f'{button_html}'
         f'</div></div></a>'
     )
 
@@ -222,8 +283,8 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
         f'<span style="color:{theme.accent_color};font-weight:600;">'
         f'{keyword} 인기상품 TOP{len(products)}</span>'
         f'을 추천합니다</div>'
-        f'{intro_html}'
         f'{top_cta_html}'
+        f'{intro_html}'
         f'{cards_html}'
         f'<div style="text-align:center;padding:16px 0 8px;font-size:11px;color:#bbb;">'
         f'{theme.footer_note}</div>'
@@ -255,7 +316,7 @@ ALIEXPRESS_THEME = ProductTheme(
     header_prefix="알리익스프레스",
     accent_color="#ff4747",
     footer_note="※ 알리익스프레스 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
-    show_discount=False,
+    show_discount=True,
     meta_fields=["rating:⭐ {}", "sales_num:{} 판매"],
     excerpt_template=(
         "본 상품 키워드({keyword})는 네이버 데이터랩과 아이템스카우트 데이터 조합으로 "

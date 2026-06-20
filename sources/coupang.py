@@ -274,11 +274,16 @@ def _parse_coupang_html(html: str, keyword: str, count: int,
         discount_m = re.search(r'(\d+)%', price_text)
         discount_rate = discount_m.group(0) if discount_m else ""
 
-        # 실제 가격 (숫자,숫자원 패턴 중 마지막)
+        # 실제 가격 + 정가(앵커링용) — '원' 패턴 중 최저가=판매가, 최고가=정가
         prices_found = re.findall(r'([\d,]+)원', price_text)
-        # 가장 낮은 숫자 = 실제 판매가
+        original_price = ""
         if prices_found:
-            price = min(prices_found, key=lambda x: int(x.replace(",", ""))) + "원"
+            uniq = sorted({p for p in prices_found},
+                          key=lambda x: int(x.replace(",", "")))
+            price = uniq[0] + "원"
+            # 할인이 있을 때만 최고가를 정가로 취함 (단가/배송비 등 노이즈 방지)
+            if discount_rate and len(uniq) >= 2:
+                original_price = uniq[-1] + "원"
         else:
             price = ""
 
@@ -295,7 +300,23 @@ def _parse_coupang_html(html: str, keyword: str, count: int,
         if rating_el:
             raw_rating = rating_el.get_text(strip=True)          # "(1,513)"
             review_count = re.sub(r"[()]", "", raw_rating)       # "1,513"
-        rating = ""  # 별점 숫자는 CSS fill로 표현되어 텍스트 추출 불가
+
+        # 별점 — 텍스트가 없어도 star-fill width(%) 또는 aria-label/title 에서 복구.
+        # (쿠팡 모바일은 별점을 CSS fill 로 그려 텍스트 추출 불가) 실패 시 ""(비파괴).
+        rating = ""
+        star_scope = rating_el or item
+        for el in star_scope.find_all(class_=re.compile(r"star|rating", re.I)):
+            wm = re.search(r"width:\s*([\d.]+)%", str(el.get("style", "") or ""))
+            if wm:
+                pct = float(wm.group(1))
+                if 0 < pct <= 100:
+                    rating = f"{round(pct / 20, 1)}"
+                    break
+        if not rating and rating_el:
+            label = str(rating_el.get("aria-label", "") or rating_el.get("title", "") or "")
+            lm = re.search(r"([0-5](?:\.\d)?)", label)
+            if lm:
+                rating = lm.group(1)
 
         # 배송 도착 정보
         arrive_el = (item.select_one('[class*="arrival"]')
@@ -308,15 +329,16 @@ def _parse_coupang_html(html: str, keyword: str, count: int,
             aff_url = FAKE_LINK
 
         products.append({
-            "name":          name,
-            "price":         price,
-            "discount_rate": discount_rate,
-            "arrival_time":  arrival_time,
-            "rating":        rating,
-            "review_count":  review_count,
-            "image":         image_url,
-            "url":           href,
-            "affiliate_url": aff_url,
+            "name":           name,
+            "price":          price,
+            "original_price": original_price,
+            "discount_rate":  discount_rate,
+            "arrival_time":   arrival_time,
+            "rating":         rating,
+            "review_count":   review_count,
+            "image":          image_url,
+            "url":            href,
+            "affiliate_url":  aff_url,
         })
 
     log(f"쿠팡 파싱 완료: {len(products)}개", "ok")
@@ -352,15 +374,16 @@ def _api_search(keyword: str, count: int = 10,
         products = []
         for item in items[:count]:
             products.append({
-                "name":          item.get("productName", ""),
-                "price":         f"{item.get('productPrice', '')}원",
-                "discount_rate": "",
-                "arrival_time":  "",
-                "rating":        str(item.get("productRating", "")),
-                "review_count":  str(item.get("productReviewCount", "0")),
-                "image":         item.get("productImage", ""),
-                "url":           item.get("productUrl", ""),
-                "affiliate_url": item.get("shortenUrl") or make_partners_link(item.get("productUrl", ""), channel_id=channel_id),
+                "name":           item.get("productName", ""),
+                "price":          f"{item.get('productPrice', '')}원",
+                "original_price": "",
+                "discount_rate":  "",
+                "arrival_time":   "",
+                "rating":         str(item.get("productRating", "")),
+                "review_count":   str(item.get("productReviewCount", "0")),
+                "image":          item.get("productImage", ""),
+                "url":            item.get("productUrl", ""),
+                "affiliate_url":  item.get("shortenUrl") or make_partners_link(item.get("productUrl", ""), channel_id=channel_id),
             })
         log(f"파트너스 API 결과: {len(products)}개", "ok")
         return products
@@ -404,25 +427,29 @@ class CoupangSource:
         self.channel_id    = channel_id or CHANNEL_ID
 
     def search(self, keyword: str, count: int = 10) -> list:
-        """상품 검색. 크롬 크롤링 → API 순으로 시도."""
+        """상품 검색. 크롬 크롤링 → API 순으로 시도.
+
+        결과는 리뷰수 내림차순 정렬 — 베스트셀러가 1위 CTA/상단 카드를 차지하도록.
+        """
         log(f"쿠팡 검색: {keyword} (channel={self.channel_id})", "step")
+        from common.product_html import sort_products_by_popularity
 
         if self.use_api_first:
             products = _api_search(keyword, count, channel_id=self.channel_id)
             if products:
-                return products
+                return sort_products_by_popularity(products)
 
         # 기본: 로컬 크롬 모바일 모드 크롤링
         products = _crawl_with_local_chrome(keyword, count, channel_id=self.channel_id)
         if products:
-            return products
+            return sort_products_by_popularity(products)
 
         # 폴백: 파트너스 API
         if not self.use_api_first:
             log("크롤링 실패, 파트너스 API 폴백 시도", "warn")
             products = _api_search(keyword, count, channel_id=self.channel_id)
 
-        return products
+        return sort_products_by_popularity(products)
 
     def search_with_links(self, keyword: str, count: int = 10) -> list:
         return self.search(keyword, count)

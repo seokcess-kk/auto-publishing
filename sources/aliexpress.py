@@ -106,6 +106,17 @@ def _parse_items(obj: dict, count: int) -> list:
             price = item["prices"]["salePrice"]["formattedPrice"]
         except Exception:
             price = ""
+        # 정가/할인율 (앵커링용) — 키 구조가 유동적이라 best-effort
+        original_price = ""
+        discount = ""
+        try:
+            prices = item.get("prices", {}) or {}
+            orig = prices.get("originalPrice") or {}
+            original_price = orig.get("formattedPrice", "") if isinstance(orig, dict) else ""
+            discount = str(prices.get("discount") or prices.get("discountText") or "")
+        except Exception:
+            original_price = ""
+            discount = ""
         try:
             product_id = item["productId"]
             general_link = f"https://ko.aliexpress.com/item/{product_id}.html"
@@ -115,13 +126,15 @@ def _parse_items(obj: dict, count: int) -> list:
         if not title or not general_link:
             continue
         products.append({
-            "name":          title,
-            "image":         picture,
-            "sales_num":     str(sales_num),
-            "rating":        str(grade),
-            "price":         price,
-            "url":           general_link,
-            "affiliate_url": "",
+            "name":           title,
+            "image":          picture,
+            "sales_num":      str(sales_num),
+            "rating":         str(grade),
+            "price":          price,
+            "original_price": original_price,
+            "discount_rate":  discount,
+            "url":            general_link,
+            "affiliate_url":  "",
         })
     return products
 
@@ -404,20 +417,37 @@ class AliexpressSource:
                 continue
 
             name = lines[0]
-            # 가격: ₩ 로 시작하는 첫 줄
-            price = ""
+            # 가격: 통화 라인 수집 → 최저가=판매가, 최고가=정가 (앵커링)
             rating = ""
             sales_num = ""
+            discount = ""
+            currency_lines: list = []
             for ln in lines[1:]:
-                if not price and (ln.startswith("₩") or ln.startswith("$")):
-                    price = ln
+                if ln.startswith("₩") or ln.startswith("$"):
+                    currency_lines.append(ln)
                     continue
                 if not rating and re.match(r"^\d\.\d$", ln):
                     rating = ln
                     continue
+                if not discount:
+                    dm = re.search(r"(\d{1,2})%", ln)
+                    if dm:
+                        discount = dm.group(0)
                 if not sales_num and "판매" in ln:
                     # "5,000+ 판매" → "5,000+"
                     sales_num = ln.replace("판매", "").strip()
+
+            def _won(s: str) -> int:
+                d = re.sub(r"[^\d]", "", s)
+                return int(d) if d else 0
+
+            price = ""
+            original_price = ""
+            uniq_prices = sorted({c for c in currency_lines if _won(c) > 0}, key=_won)
+            if uniq_prices:
+                price = uniq_prices[0]
+                if discount and len(uniq_prices) >= 2:
+                    original_price = uniq_prices[-1]
 
             img = r.get("img", "")
             if img.startswith("//"):
@@ -426,13 +456,15 @@ class AliexpressSource:
             general_link = f"https://ko.aliexpress.com/item/{r['productId']}.html"
 
             products.append({
-                "name":          name,
-                "image":         img,
-                "sales_num":     sales_num,
-                "rating":        rating,
-                "price":         price,
-                "url":           general_link,
-                "affiliate_url": "",
+                "name":           name,
+                "image":          img,
+                "sales_num":      sales_num,
+                "rating":         rating,
+                "price":          price,
+                "original_price": original_price,
+                "discount_rate":  discount,
+                "url":            general_link,
+                "affiliate_url":  "",
             })
             if len(products) >= count:
                 break
@@ -575,6 +607,10 @@ class AliexpressSource:
             log(f"키워드 '{keyword}' 매칭 부족 ({hits}/{len(products)}) — "
                 f"발행 가치 낮음, 빈 결과 반환", "warn")
             return []
+
+        # 판매량(sales_num) 내림차순 — 베스트셀러가 1위 CTA/상단 카드를 차지하도록
+        from common.product_html import sort_products_by_popularity
+        products = sort_products_by_popularity(products)
 
         if not require_affiliate:
             return products[:count]
