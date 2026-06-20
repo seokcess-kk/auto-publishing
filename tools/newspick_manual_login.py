@@ -19,6 +19,12 @@ import sys
 import time
 from pathlib import Path
 
+# Windows 콘솔(cp949)에서 한글 print 가 깨지는 것 방지
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _BASE_DIR)
 
@@ -33,9 +39,12 @@ _USER_AGENT = (
 )
 
 
-def _has_session_cookie(context) -> bool:
-    cookies = context.cookies(["https://partners.newspic.kr"])
-    return any(c.get("name") == "SESSION" for c in cookies)
+def _session_cookie_value(context):
+    """현재 SESSION 쿠키 값 (없으면 None)."""
+    for c in context.cookies(["https://partners.newspic.kr"]):
+        if c.get("name") == "SESSION":
+            return c.get("value")
+    return None
 
 
 def _watch_popups(context) -> None:
@@ -90,7 +99,26 @@ def collect() -> bool:
         print("카카오 버튼을 누르면 popup 창이 뜹니다. 작업표시줄/Alt-Tab 으로 확인하세요.")
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
 
-        input(">>> 로그인 완료 (관리 페이지 도달) 후 Enter <<<")
+        # 로그인 완료를 SESSION 쿠키로 자동 감지 (폴링). input() 으로 Enter 를
+        # 기다리지 않으므로 비대화형 실행(`! python ...`, 파이프 등)에서도
+        # EOFError 없이 동작한다. 프로필에 남은 만료 쿠키를 오인하지 않도록
+        # '시작 시점과 다른 새 SESSION 값'이 생겼을 때만 성공으로 본다.
+        initial = _session_cookie_value(context)
+        wait_sec = int(os.getenv("NEWSPICK_LOGIN_WAIT_SEC", "300"))
+        print(f">>> 브라우저에서 로그인하세요. 로그인이 감지되면 자동 저장됩니다 "
+              f"— 최대 {wait_sec}s 대기 <<<")
+        deadline = time.time() + wait_sec
+        detected = False
+        while time.time() < deadline:
+            try:
+                cur = _session_cookie_value(context)
+                if cur and cur != initial:
+                    detected = True
+                    print("로그인 감지됨 — 새 SESSION 쿠키 확인.")
+                    break
+            except Exception:
+                pass
+            time.sleep(3)
 
         # 디버그 — 현재 컨텍스트의 모든 페이지 URL 출력
         try:
@@ -100,13 +128,12 @@ def collect() -> bool:
         except Exception:
             pass
 
-        # SESSION 쿠키 확인 — 미존재 시 로그인 미완료로 판단.
-        if not _has_session_cookie(context):
-            print("SESSION 쿠키가 보이지 않습니다 — 로그인이 완료되지 않은 것 같습니다.")
-            print("브라우저에서 partners.newspic.kr 관리 페이지에 도달했는지 확인 후 재실행하세요.")
+        if not detected:
+            print(f"새 로그인 미감지 ({wait_sec}s 대기) — 세션 저장 안 함.")
+            print("브라우저에서 partners.newspic.kr 관리 페이지까지 로그인했는지 확인 후 재실행하세요.")
             try:
                 cookies = context.cookies(["https://partners.newspic.kr"])
-                print(f"감지 쿠키({len(cookies)}개): {[c['name'] for c in cookies][:15]}")
+                print(f"감지 쿠키({len(cookies)}개): {[c.get('name') for c in cookies][:15]}")
             except Exception:
                 pass
             context.close()
