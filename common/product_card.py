@@ -153,3 +153,58 @@ REALESTATE_DEFAULT_KEYWORDS = [
 
 # 정책/뉴스 류에서 쓸 범용 키워드
 GENERIC_DEFAULT_KEYWORDS = list(_FALLBACK_KEYWORDS)
+
+
+# ─── 뉴스픽 글 카테고리 코드(CAxxyy) → 본문 맥락에 맞는 상품 키워드 ──────────
+# 뉴스픽 API 가 글마다 주는 category 코드의 상위 4자리(CA0N)가 대분류다:
+#   CA01 시사(정치/사회/경제일반/사건사고/IT보안), CA02 라이프/문화,
+#   CA03 연예, CA04 스포츠, CA09 경제/증시.
+# 목적: "한동훈 대선 → 캠핑 랜턴" 같은 무관 상품을 없애고 본문과 연관된 상품만
+#       붙인다. 자연스러운 상품이 없는 하드뉴스(CA01/CA09)는 카드를 생략한다.
+_CATE_HARD_NEWS_PREFIXES = ("CA01", "CA09")  # 시사·증시 → 상품 카드 생략
+
+_CATE_CODE_KEYWORDS = {
+    # ── CA02 라이프/문화 (세분) ──
+    "CA0203": ["독서대", "북엔드", "책장", "북라이트", "북커버"],            # 도서
+    "CA0204": ["독서대", "북엔드", "책장", "북라이트", "북커버"],            # 문학
+    "CA0205": ["여행용 캐리어", "목베개", "여권 케이스", "여행 파우치", "보조배터리"],  # 여행
+    "CA0206": ["여름 원피스", "린넨 셔츠", "샌들", "선글라스", "버킷햇"],     # 패션
+    "CA0207": ["무선 이어폰", "보조배터리", "스마트워치", "기계식 키보드", "휴대용 SSD"],  # 테크/IT
+    "CA0208": ["수납 정리함", "디퓨저", "수면 안대", "텀블러", "무드등"],     # 라이프
+    "CA0210": ["인테리어 소품", "디퓨저", "캔들", "무드등", "복주머니"],      # 운세(분위기 소품)
+    "CA0215": ["게이밍 마우스", "게이밍 키보드", "게이밍 헤드셋", "마우스패드", "게이밍 의자"],  # 게임
+    # ── CA04 스포츠 (세분) ──
+    "CA0403": ["야구 글러브", "야구 배트", "야구공", "배팅 장갑", "야구 모자"],   # 야구
+    "CA0405": ["축구화", "축구공", "정강이 보호대", "스포츠 양말", "축구 유니폼"],  # 축구
+    "CA0408": ["골프공", "골프 장갑", "골프 거리측정기", "골프 티", "골프 우산"],   # 골프
+}
+
+# 대분류(CA0N) 폴백 풀 — 세분 코드 매칭이 없을 때
+_CATE_GROUP_KEYWORDS = {
+    "CA02": list(GENERIC_DEFAULT_KEYWORDS),                                       # 라이프 기타 → 생활용품
+    "CA03": ["립밤", "쿠션 팩트", "헤어 에센스", "향수", "패션 악세서리"],          # 연예 → 뷰티/패션(시청자층)
+    "CA04": ["러닝화", "스포츠 이어폰", "요가매트", "홈트레이닝 밴드", "스포츠 양말"],  # 스포츠 일반
+}
+
+
+def keywords_for_cate_code(code: str):
+    """뉴스픽 글 카테고리 코드(CAxxyy) → 연관 상품 키워드 풀.
+
+    반환:
+        list[str] — 해당 글 맥락에 맞는 상품 키워드 (랜덤 1개 검색용)
+        None      — 자연스러운 상품이 없는 하드뉴스(CA01/CA09) → 카드 생략
+
+    우선순위: 정확 코드 → 대분류(CA0N) 폴백 → 하드뉴스면 None →
+    알 수 없는/빈 코드는 generic(기존 동작 유지, 무관 아님).
+    """
+    if not code:
+        return list(GENERIC_DEFAULT_KEYWORDS)        # 코드 없음 → 기존 동작
+    code = code.strip().upper()
+    if any(code.startswith(p) for p in _CATE_HARD_NEWS_PREFIXES):
+        return None                                  # 시사·증시 → 카드 생략
+    if code in _CATE_CODE_KEYWORDS:
+        return list(_CATE_CODE_KEYWORDS[code])       # 세분 매칭
+    grp = code[:4]
+    if grp in _CATE_GROUP_KEYWORDS:
+        return list(_CATE_GROUP_KEYWORDS[grp])       # 대분류 폴백
+    return list(GENERIC_DEFAULT_KEYWORDS)            # 미지 코드 → generic(안전)

@@ -572,6 +572,9 @@ class NewspickSource:
                 "url":        item.get("link", ""),
                 "image":      item.get("imgUrl", ""),
                 "category":   category,
+                # 글별 실제 카테고리 코드(CAxxyy) — 본문 맥락에 맞는 상품 매칭용.
+                # 요청 카테고리("추천"=혼합)와 달리 글 자체의 주제를 가리킨다.
+                "cate_code":  item.get("category", ""),
                 "nid":        str(item.get("nid", "")),
                 "providerNo": str(item.get("providerNo", "")),
                 "recomType":  item.get("recomType", ""),
@@ -584,6 +587,7 @@ class NewspickSource:
                 "url":        item.get("link", ""),
                 "image":      item.get("imgUrl", ""),
                 "category":   category,
+                "cate_code":  item.get("category", ""),   # 글별 실제 카테고리 코드(CAxxyy)
                 "nid":        str(item.get("nid", "")),
                 "providerNo": str(item.get("providerNo", "")),
                 "recomType":  item.get("recomType", ""),

@@ -15,8 +15,8 @@ from typing import Callable
 from common.logger import log
 from common.notifier import notify_pipeline_result
 from common.product_card import (
-    GENERIC_DEFAULT_KEYWORDS,
     fetch_recommend_product,
+    keywords_for_cate_code,
     render_product_card,
 )
 from sources.newspick import NewspickSource
@@ -87,17 +87,24 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
         return
 
     # 1.5) 쿠팡 추천 상품 미리 수집 (sync_playwright 충돌 방지를 위해 publisher 로그인 전)
+    #   ⚠️ 글마다 cate_code(CAxxyy)로 '본문 맥락에 맞는' 상품 키워드를 골라 검색한다.
+    #   하드뉴스(시사/증시)는 자연스러운 상품이 없으므로 keywords_for_cate_code 가
+    #   None 을 주고 → 카드 자체를 생략한다. (한동훈 대선 글에 캠핑 랜턴 붙던 문제 해결)
     products: list = []
     if cfg.coupang_card:
         channel_id = (
             os.getenv(cfg.coupang_channel_env, "")
             or os.getenv("COUPANG_CHANNEL_ID", "")
         )
-        for _ in articles:
+        for article in articles:
+            code = article.get("cate_code", "")
+            kws = keywords_for_cate_code(code)
+            if not kws:
+                log(f"[뉴스픽] 카테고리 {code or '?'} 상품 부적합 — 카드 생략", "info")
+                products.append(None)
+                continue
             try:
-                products.append(fetch_recommend_product(
-                    GENERIC_DEFAULT_KEYWORDS, channel_id=channel_id,
-                ))
+                products.append(fetch_recommend_product(kws, channel_id=channel_id))
             except Exception as e:
                 log(f"쿠팡 상품 수집 예외: {e}", "warn")
                 products.append(None)
