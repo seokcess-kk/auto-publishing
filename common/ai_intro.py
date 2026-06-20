@@ -979,10 +979,14 @@ def generate_newspick_title(raw_title: str, category: str = "") -> str:
             return ""
         return first
 
-    # Gemini 우선(빠름·포맷 준수 양호) → 비거나 검증 탈락 시 Claude 재시도.
-    # 한쪽이 비어있지 않아도 검증을 통과해야 채택하므로, 단순 'empty 시 폴백'의
-    # 사각지대(응답은 있으나 형식 위반)를 메운다.
-    for gen in (_generate_with_gemini, _generate_with_claude):
+    # AI_PROVIDER 우선순위대로 시도(기본 claude=Anthropic API). 검증을 통과한
+    # 응답만 채택하고, 비거나 형식 위반이면 반대 제공자로 폴백 — 단순 'empty 시
+    # 폴백'의 사각지대(응답은 있으나 형식 위반)를 메운다.
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    order = ((_generate_with_claude, _generate_with_gemini)
+             if provider == "claude"
+             else (_generate_with_gemini, _generate_with_claude))
+    for gen in order:
         result = _validate(gen(prompt))
         if result:
             return result
@@ -1023,10 +1027,15 @@ def generate_newspick_article(raw_title: str, category: str = "") -> str:
         f"- 마지막에 링크·CTA·해시태그 넣지 말 것 (호출 측이 별도 추가)\n"
         f"- 본문 HTML 만 출력 (메타 설명·인사말 금지)"
     )
-    # 본문은 400~600자로 길어 Claude CLI(haiku)가 60초 타임아웃을 자주 초과한다.
-    # → Gemini 우선(키 있으면 빠르게 성공), 없거나 실패 시 Claude 폴백.
+    # AI_PROVIDER 우선순위대로 생성(기본 claude=Anthropic API, ~1-3초). 실패 시
+    # 반대 제공자 폴백. (과거 'claude'가 Claude CLI 였을 땐 400~600자 본문이 60초
+    #  타임아웃을 자주 초과해 Gemini 우선이었으나, 이제 claude 는 API 라 빠르고 안정적.)
     log(f"AI 뉴스픽 본문 생성: {raw_title[:30]}", "step")
-    text = _generate_with_gemini(prompt) or _generate_with_claude(prompt)
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    if provider == "claude":
+        text = _generate_with_claude(prompt) or _generate_with_gemini(prompt)
+    else:
+        text = _generate_with_gemini(prompt) or _generate_with_claude(prompt)
     if not text or _looks_like_refusal(text):
         return ""
 
