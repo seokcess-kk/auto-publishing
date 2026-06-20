@@ -894,24 +894,33 @@ def generate_newspick_title(raw_title: str, category: str = "") -> str:
         f"- 자극적 낚시성 단어(충격/경악/헉) 금지\n"
         f"- 제목 1줄만 출력 (메타 설명 금지)"
     )
-    provider = os.getenv("AI_PROVIDER", "claude").lower()
-    log(f"AI 뉴스픽 제목 재작성 ({provider}): {raw_title[:30]}", "step")
-    raw = generate_text(prompt, provider=provider, max_len=60)
-    cleaned = _clean_ai_output(raw)
-    if not cleaned:
-        return ""
-    if any(tok in cleaned for tok in _TITLE_FORBIDDEN_TOKENS):
-        return ""
-    if cleaned.count("\n") >= 2:
-        return ""
-    first = cleaned.split("\n")[0].strip(" \t-•·\"'")
-    if not first or any(kw in first for kw in _TITLE_META_KEYWORDS):
-        return ""
-    if len(first) > 45:
-        first = first[:45].rsplit(" ", 1)[0] if " " in first[:45] else first[:45]
-    if len(first) < 18:
-        return ""
-    return first
+    log(f"AI 뉴스픽 제목 재작성: {raw_title[:30]}", "step")
+
+    def _validate(raw: str) -> str:
+        cleaned = _clean_ai_output(raw)
+        if not cleaned:
+            return ""
+        if any(tok in cleaned for tok in _TITLE_FORBIDDEN_TOKENS):
+            return ""
+        if cleaned.count("\n") >= 2:
+            return ""
+        first = cleaned.split("\n")[0].strip(" \t-•·\"'")
+        if not first or any(kw in first for kw in _TITLE_META_KEYWORDS):
+            return ""
+        if len(first) > 45:
+            first = first[:45].rsplit(" ", 1)[0] if " " in first[:45] else first[:45]
+        if len(first) < 18:
+            return ""
+        return first
+
+    # Gemini 우선(빠름·포맷 준수 양호) → 비거나 검증 탈락 시 Claude 재시도.
+    # 한쪽이 비어있지 않아도 검증을 통과해야 채택하므로, 단순 'empty 시 폴백'의
+    # 사각지대(응답은 있으나 형식 위반)를 메운다.
+    for gen in (_generate_with_gemini, _generate_with_claude):
+        result = _validate(gen(prompt))
+        if result:
+            return result
+    return ""
 
 
 def generate_newspick_article(raw_title: str, category: str = "") -> str:
@@ -948,19 +957,10 @@ def generate_newspick_article(raw_title: str, category: str = "") -> str:
         f"- 마지막에 링크·CTA·해시태그 넣지 말 것 (호출 측이 별도 추가)\n"
         f"- 본문 HTML 만 출력 (메타 설명·인사말 금지)"
     )
-    provider = os.getenv("AI_PROVIDER", "claude").lower()
-    log(f"AI 뉴스픽 본문 생성 ({provider}): {raw_title[:30]}", "step")
-    if provider == "claude":
-        text = _generate_with_claude(prompt)
-    else:
-        text = _generate_with_gemini(prompt)
-    if not text:
-        fallback = "gemini" if provider == "claude" else "claude"
-        log(f"{provider} 실패, {fallback} 폴백", "warn")
-        if fallback == "claude":
-            text = _generate_with_claude(prompt)
-        else:
-            text = _generate_with_gemini(prompt)
+    # 본문은 400~600자로 길어 Claude CLI(haiku)가 60초 타임아웃을 자주 초과한다.
+    # → Gemini 우선(키 있으면 빠르게 성공), 없거나 실패 시 Claude 폴백.
+    log(f"AI 뉴스픽 본문 생성: {raw_title[:30]}", "step")
+    text = _generate_with_gemini(prompt) or _generate_with_claude(prompt)
     if not text or _looks_like_refusal(text):
         return ""
 
