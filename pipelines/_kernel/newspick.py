@@ -8,8 +8,10 @@
 """
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from common.logger import log
@@ -48,6 +50,70 @@ def _save_history(titles: set) -> None:
     os.replace(tmp, _HISTORY_PATH)
 
 
+# ─── P2 화제성 선별 ──────────────────────────────────────────────────────────
+# 뉴스픽 API 의 isHot/impRank/star 는 이 피드에서 비어있어 못 쓴다. 실제 쓸 수
+# 있는 신호는 피드 순서(뉴스픽 자체 랭킹) + pubDate(신선도) + 제목 그 자체.
+# 따라서 후보 풀에서 ①중복/저관심/부적합 제거 후 ②제목 후킹 점수로 정렬해 고른다.
+
+# 행정 공지·시험 안내·부고·사건사고 — 블로그 가치 낮거나 민감(상품 카드도 부적절).
+_LOW_INTEREST_RE = re.compile(
+    r"(가답안|정답\s*공개|채점|시험\s*일정|합격자\s*발표|모집\s*공고|채용\s*공고|"
+    r"부고|별세|숙환|숨진|숨졌|사망|숨\s*거둬|투신|자살|피살|흉기|부음)"
+)
+
+# 호기심/후킹 신호어 — 제목에 있으면 화제성 가점.
+_HOOK_WORDS = (
+    "충격", "논란", "발칵", "깜짝", "소름", "반전", "경악", "결국", "왜", "이유",
+    "정체", "알고보니", "사실", "공개", "포착", "헉", "무슨일", "깜놀", "화제",
+)
+
+
+def _is_low_interest(title: str) -> bool:
+    return bool(_LOW_INTEREST_RE.search(title or ""))
+
+
+def _score_article(a: dict, order_idx: int, today: str) -> float:
+    """화제성 점수 — 높을수록 우선 발행."""
+    title = a.get("title", "") or ""
+    score = max(0.0, 20.0 - order_idx)          # 뉴스픽 피드 랭킹(앞쪽=상위) 신뢰
+    if (a.get("pubDate", "") or "").startswith(today):
+        score += 4.0                            # 오늘자 신선도
+    if any(q in title for q in ('"', "'", "…", "?", "“", "”")):
+        score += 4.0                            # 인용/말줄임/물음표 후킹
+    if re.search(r"\d", title):
+        score += 2.0                            # 구체적 숫자
+    if any(w in title for w in _HOOK_WORDS):
+        score += 4.0                            # 호기심 단어
+    if keywords_for_cate_code(a.get("cate_code", "")):
+        score += 2.0                            # 상품 매칭 가능(수익화) 소폭 가점
+    return score
+
+
+def _select_topical(pool: list, count: int, history: set) -> list:
+    """후보 풀에서 중복·저관심·부적합 제거 후 화제성 상위 count 선택.
+
+    기존엔 top 글만 취해 그게 이미 발행된 중복이면 0건 발행되는 사각지대가 있었다.
+    풀 전체에서 신규·화제성 높은 글을 고르므로 그 문제가 사라진다.
+    """
+    today = datetime.now().strftime("%Y.%m.%d")   # pubDate 포맷 "2026.06.20."
+    cand = []
+    for idx, a in enumerate(pool):
+        title = a.get("title", "") or ""
+        if not title or title in history:
+            continue                              # 빈 제목 / 이미 발행
+        if a.get("isVideo"):
+            continue                              # 영상 → 텍스트 블로그 부적합
+        if _is_low_interest(title):
+            continue                              # 행정공지/부고/사건
+        cand.append((idx, a))
+    cand.sort(key=lambda x: _score_article(x[1], x[0], today), reverse=True)
+    selected = [a for _, a in cand[:count]]
+    if selected:
+        log(f"[뉴스픽] 화제성 선별: 후보 {len(pool)} → 신규 {len(cand)} → 채택 "
+            f"{len(selected)} (top: {selected[0].get('title', '')[:34]})", "info")
+    return selected
+
+
 @dataclass
 class NewspickConfig:
     """뉴스픽→Publisher 파이프라인 설정."""
@@ -79,12 +145,24 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
         notify_pipeline_result(cfg.name, 0, count, details="뉴스픽 세션 없음")
         return
 
-    # fetch 가 추천+일반 두 소스에서 가져오므로 최대 2*count 반환 → 명시적 절단
-    articles = newspick.fetch_with_links(category=category, count=count)[:count]
-    if not articles:
+    # P2 화제성 선별 — 후보 풀(count*8, 최소 15)에서 중복·저관심·부적합 제거 후
+    # 화제성 점수 상위 count 선택. (기존엔 top 글만 취해 그게 이미 발행한 중복이면
+    # 0건 발행되는 사각지대가 있었다. 이제 풀에서 신규·화제성 높은 글을 고른다.)
+    published_history = _load_history()
+    pool = newspick.fetch(category, count=max(count * 8, 15))
+    if not pool:
         log("수집된 아티클 없음", "warn")
         notify_pipeline_result(cfg.name, 0, count, details="수집 실패")
         return
+    articles = _select_topical(pool, count, published_history)
+    if not articles:
+        log("선별된 신규 아티클 없음 (모두 중복/저관심/부적합)", "warn")
+        notify_pipeline_result(cfg.name, 0, count,
+                               details="신규 기사 없음", reason="empty")
+        return
+    # 선택된 글에만 단축 링크 생성 — 풀 전체에 링크 만드는 낭비 회피
+    for a in articles:
+        a["short_url"] = newspick.shorten_link(a, category)
 
     # 1.5) 쿠팡 추천 상품 미리 수집 (sync_playwright 충돌 방지를 위해 publisher 로그인 전)
     #   ⚠️ 글마다 cate_code(CAxxyy)로 '본문 맥락에 맞는' 상품 키워드를 골라 검색한다.
@@ -121,8 +199,7 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
 
     post_category = os.getenv(cfg.post_category_env, "") if cfg.post_category_env else ""
 
-    published_history = _load_history()
-
+    # published_history 는 위(선별 단계)에서 이미 로드됨 — 발행 성공 시 갱신만 한다.
     published = 0
     skipped_dup = 0
     last_url = ""
