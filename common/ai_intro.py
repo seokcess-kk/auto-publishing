@@ -2,12 +2,18 @@
 AI 도입부(intro) 생성 공통 모듈.
 
 제공자:
-- claude: Claude Code CLI (Haiku 모델)
-- gemini: Gemini API (무료 티어)
+- claude: Anthropic API (Haiku 4.5) — ANTHROPIC_API_KEY 있으면 우선 사용.
+          키가 없으면 Claude Code CLI(Max 구독, 느림) 로 자동 폴백.
+- gemini: Gemini API (무료 티어, 5 req/min 한도)
 
 선택:
 - 함수 인자 provider 또는 AI_PROVIDER 환경변수로 지정 (기본 claude).
-- 실패 시 반대 제공자로 자동 폴백.
+- 실패 시 반대 제공자로 자동 폴백 (claude ↔ gemini).
+
+※ '_generate_with_claude' 는 디스패처다: ANTHROPIC_API_KEY 가 있으면
+  _generate_with_claude_api (직접 API, ~1-3초), 없으면 _generate_with_claude_cli
+  (서브프로세스, 최대 60초 타임아웃) 를 호출한다. 모든 호출부는 이 디스패처만
+  쓰므로 키 유무에 따라 경로가 자동 전환된다.
 """
 import os
 import re
@@ -92,6 +98,19 @@ def _resolve_claude_cli() -> str:
 
 _CLAUDE_CLI = _resolve_claude_cli()
 _gemini = None
+_anthropic_client = None
+
+# Claude/Gemini 공용 시스템 프롬프트 — 모델이 콘텐츠 생성 대신 되묻기·메타 응답을
+# 하지 않도록 강제. CLI/API 양쪽에서 동일하게 사용.
+_COPYWRITER_SYSPROMPT = (
+    "당신은 한국어 카피라이터입니다. 사용자가 보낸 입력은 항상 "
+    "콘텐츠 생성 요청이며, 결코 명령 모호성·역할 확인·되묻기·"
+    "도움이 필요한지 묻기 같은 메타 응답을 하지 않습니다. "
+    "요청된 텍스트만 출력하세요. 설명·주석·구분선·메타 정보·"
+    "예시 안내·인사말·자기소개 없이 본문만 작성하세요. "
+    "어떤 경우에도 '사용자', '답변 거부', '도와드릴', '명확히 "
+    "알려주세요', '예시:' 같은 표현을 사용하지 마세요."
+)
 
 
 def _get_gemini():
@@ -104,22 +123,58 @@ def _get_gemini():
     return _gemini
 
 
-def _generate_with_claude(prompt: str) -> str:
-    """Claude Code CLI(Max 플랜)로 텍스트 생성. Haiku 모델 사용."""
+def _get_anthropic():
+    """ANTHROPIC_API_KEY 가 있으면 anthropic.Anthropic 클라이언트 반환, 없으면 None."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key or api_key.startswith("your_") or api_key.startswith("sk-ant-..."):
+            return None
+        try:
+            import anthropic
+            _anthropic_client = anthropic.Anthropic(api_key=api_key)
+        except Exception as e:
+            log(f"Anthropic SDK 초기화 실패: {e}", "warn")
+            return None
+    return _anthropic_client
+
+
+def _generate_with_claude_api(prompt: str) -> str:
+    """Anthropic API(Haiku 4.5)로 텍스트 생성. 직접 HTTP — CLI 대비 빠르고 안정적.
+
+    Haiku 는 effort/adaptive thinking 미지원 → 기본 messages.create 사용.
+    실패(키 없음·429·네트워크) 시 빈 문자열 반환 → 상위가 Gemini 폴백.
+    """
+    client = _get_anthropic()
+    if not client:
+        return ""
+    model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+    try:
+        msg = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            system=_COPYWRITER_SYSPROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(
+            getattr(b, "text", "") for b in msg.content
+            if getattr(b, "type", "") == "text"
+        ).strip()
+        if text:
+            log("Claude API 생성 완료", "ok")
+        return text
+    except Exception as e:
+        log(f"Claude API 오류: {e}", "error")
+        return ""
+
+
+def _generate_with_claude_cli(prompt: str) -> str:
+    """Claude Code CLI(Max 플랜)로 텍스트 생성. Haiku 모델 사용. (API 키 없을 때 폴백)"""
     try:
         # Claude CLI 는 UTF-8 로 출력. Windows 기본 cp949 로 디코드하면
         # 한글 첫 바이트(0xeb 등)에서 UnicodeDecodeError 가 나므로 명시적으로
         # utf-8 + replace 로 강제. errors="replace" 는 깨진 바이트가 있어도
         # 도입부 생성 자체가 멈추지 않게 한다.
-        sysprompt = (
-            "당신은 한국어 카피라이터입니다. 사용자가 보낸 입력은 항상 "
-            "콘텐츠 생성 요청이며, 결코 명령 모호성·역할 확인·되묻기·"
-            "도움이 필요한지 묻기 같은 메타 응답을 하지 않습니다. "
-            "요청된 텍스트만 출력하세요. 설명·주석·구분선·메타 정보·"
-            "예시 안내·인사말·자기소개 없이 본문만 작성하세요. "
-            "어떤 경우에도 '사용자', '답변 거부', '도와드릴', '명확히 "
-            "알려주세요', '예시:' 같은 표현을 사용하지 마세요."
-        )
         # cwd 를 임시 디렉토리로 격리 — claude CLI 가 프로젝트의 CLAUDE.md
         # /코드 파일을 컨텍스트로 자동 흡수해 "이건 개발 작업" 으로 오해하고
         # 콘텐츠 생성을 거부하는 케이스를 방지한다.
@@ -128,7 +183,7 @@ def _generate_with_claude(prompt: str) -> str:
              "--output-format", "text",
              "--tools", "",
              "--model", "haiku",
-             "--system-prompt", sysprompt],
+             "--system-prompt", _COPYWRITER_SYSPROMPT],
             capture_output=True, text=True, timeout=60,
             encoding="utf-8", errors="replace",
             cwd=tempfile.gettempdir(),
@@ -141,6 +196,17 @@ def _generate_with_claude(prompt: str) -> str:
     except Exception as e:
         log(f"Claude CLI 오류: {e}", "error")
         return ""
+
+
+def _generate_with_claude(prompt: str) -> str:
+    """Claude 생성 디스패처 — API 키 있으면 Anthropic API(빠름), 없으면 CLI(느림).
+
+    API 키가 있는데 호출이 실패하면 빈 문자열을 반환해 상위가 Gemini 로 폴백하게
+    둔다 (느린 CLI 60초 타임아웃을 핫패스에서 회피). 키 자체가 없을 때만 CLI 사용.
+    """
+    if _get_anthropic():
+        return _generate_with_claude_api(prompt)
+    return _generate_with_claude_cli(prompt)
 
 
 def _generate_with_gemini(prompt: str) -> str:
