@@ -186,19 +186,28 @@ def _crawl_with_local_chrome(keyword: str, count: int = 10,
                     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
                 })
 
-            # 쿠팡 메인 먼저 방문 (쿠키/세션 획득)
-            log("쿠팡 메인 방문...", "info")
-            page.goto("https://www.coupang.com", timeout=20000, wait_until="domcontentloaded")
-            time.sleep(random.uniform(1.5, 2.5))
-
-            # 검색 페이지 이동
             encoded_kw = parse.quote(keyword)
-            log(f"쿠팡 검색 페이지 이동: {keyword}", "info")
-            resp = page.goto(
-                f"https://www.coupang.com/np/search?component=&q={encoded_kw}&channel=user",
-                timeout=20000,
-                wait_until="domcontentloaded",
+            search_url = (
+                f"https://www.coupang.com/np/search"
+                f"?component=&q={encoded_kw}&channel=user"
             )
+
+            # ⚠️ Bright Data Scraping Browser 는 세션(연결)당 page.goto 내비게이션을
+            # 1회만 허용한다 — 두번째 goto 는 'Page.navigate domain limit reached' 로
+            # 거부된다. 게다가 coupang 메인(/)은 BD 경로에서 자주 타임아웃/SSL 오류로
+            # 죽는다. 따라서 BD 경로에서는 메인 방문(쿠키 워밍업)을 생략하고 검색 URL 로
+            # 곧장 단일 goto 한다. (검증: 새 세션 단일 goto 로 검색 페이지 200 + 1.8MB
+            # 상품 HTML 수신 — tools/probe_brightdata_coupang.py)
+            if bd_wss:
+                log(f"쿠팡 검색 직행(BD 단일 내비): {keyword}", "info")
+                resp = page.goto(search_url, timeout=25000, wait_until="domcontentloaded")
+            else:
+                # 로컬 크롬: 세션 내비 제한이 없으므로 메인 먼저 방문(쿠키/세션 획득)
+                log("쿠팡 메인 방문...", "info")
+                page.goto("https://www.coupang.com", timeout=20000, wait_until="domcontentloaded")
+                time.sleep(random.uniform(1.5, 2.5))
+                log(f"쿠팡 검색 페이지 이동: {keyword}", "info")
+                resp = page.goto(search_url, timeout=20000, wait_until="domcontentloaded")
             log(f"응답 코드: {resp.status if resp else 'N/A'}", "info")
 
             # React 하이드레이션이 끝날 때까지 상품 카드 셀렉터를 명시적으로 기다린다.
