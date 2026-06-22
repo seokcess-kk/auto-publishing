@@ -618,10 +618,13 @@ class NewspickSource:
         )
         if recom_type:
             query_parts += f"&rssOption={recom_type}"
+        # utm_source 접두어는 파트너 계정마다 다르다(실제 앱 공유값 np<YYMMDD>).
+        # 기본 np220822 는 구 하드코딩 값 — NEWSPICK_UTM_PREFIX 로 본인 값 지정.
+        utm_prefix = os.getenv("NEWSPICK_UTM_PREFIX", "np220822")
         query_parts += (
             f"&channelName={quote(category)}&channelNo={cat_no}"
             f"&sharedFrom={shared_from}"
-            f"&utm_source=np220822{self.referral_code}"
+            f"&utm_source={utm_prefix}{self.referral_code}"
         )
 
         url = f"{SHORTEN_URL}?queryString=%3F{quote(query_parts, safe='')}"
