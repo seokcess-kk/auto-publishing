@@ -28,8 +28,7 @@ from common.product_card import (
     fetch_recommend_product,
     render_product_card,
 )
-from common.tistory_blogs import resolve_blog_name
-from publishers.tistory import TistoryPublisher
+from common.tistory_blogs import resolve_blog_name, make_publisher
 
 
 SCHEDULE = {
@@ -127,6 +126,7 @@ def run(count: int = 1, feeds: list = None) -> None:
     from sources.korea_policy import KoreaPolicySource
 
     blog_name = resolve_blog_name("policy")
+    is_bridge = os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
 
     if feeds is None:
         env_feeds = os.getenv("POLICY_FEEDS", "").strip()
@@ -186,8 +186,8 @@ def run(count: int = 1, feeds: list = None) -> None:
             GENERIC_DEFAULT_KEYWORDS, channel_id=channel_id,
         ))
 
-    # 4) 티스토리 로그인 (sync_playwright 켜짐)
-    pub = TistoryPublisher(blog_name)
+    # 4) 티스토리 publisher (web=Playwright / bridge=큐) 로그인
+    pub = make_publisher(blog_name)
     if not pub.login():
         log(f"티스토리 로그인 실패 (blog={blog_name})", "error")
         from common.notifier import notify_pipeline_result
@@ -216,7 +216,7 @@ def run(count: int = 1, feeds: list = None) -> None:
             if result.success:
                 published += 1
                 posted.add(item["link"])
-                log(f"[{published}/{len(targets)}] 발행 완료: {result.url}", "ok")
+                log(f"[{published}/{len(targets)}] {'큐 등록' if is_bridge else '발행 완료'}: {result.url or result.message}", "ok")
                 _save_posted(posted)
                 if result.url:
                     last_url = result.url
@@ -229,7 +229,14 @@ def run(count: int = 1, feeds: list = None) -> None:
     finally:
         _close(pub)
 
-    log(f"정책→티스토리 완료: {published}/{len(targets)}건", "step")
+    verb = "큐 등록" if is_bridge else "발행"
+    log(f"정책→티스토리 완료: {published}/{len(targets)}건 {verb}", "step")
+
+    # bridge 모드 + 성공 → 파이프라인 알림 skip. 실제 발행 완료 텔레그램 알림은
+    # bridge server 가 /done 처리 시 보낸다 (false positive "발행 성공" 방지).
+    if is_bridge and published > 0:
+        log("정책→티스토리 bridge 모드 — 파이프라인 알림 skip", "info")
+        return
 
     from common.notifier import notify_pipeline_result
     notify_pipeline_result("정책→티스토리", published, len(targets), url=last_url)

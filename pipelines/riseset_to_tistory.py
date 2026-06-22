@@ -20,10 +20,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from common.logger import log
-from common.tistory_blogs import resolve_blog_name
+from common.tistory_blogs import resolve_blog_name, make_publisher
 from sources.riseset import RiseSetSource
 from sources.coupang import CoupangSource
-from publishers.tistory import TistoryPublisher
 
 from pipelines._riseset_common import (
     _LOCATIONS,
@@ -87,8 +86,8 @@ def run() -> None:
 
     image_url = product.get("image", "") if product else ""
 
-    # ── 티스토리 로그인 & 발행
-    pub = TistoryPublisher(blog_name)
+    # ── 티스토리 publisher (web=Playwright / bridge=큐) 로그인 & 발행
+    pub = make_publisher(blog_name)
     if not pub.login():
         log(f"티스토리 로그인 실패 (blog={blog_name}). 종료.", "error")
         from common.notifier import notify_pipeline_result
@@ -108,8 +107,14 @@ def run() -> None:
         _close(pub)
 
     from common.notifier import notify_pipeline_result
+    is_bridge = os.getenv("TISTORY_PUBLISHER", "web").strip().lower() == "bridge"
     if result.success:
-        log(f"발행 완료: {result.url}", "ok")
+        log(f"{'큐 등록' if is_bridge else '발행 완료'}: {result.url or result.message}", "ok")
+        # bridge 모드 → 파이프라인 알림 skip. 실제 발행 완료 알림은 bridge
+        # server 가 /done 처리 시 보낸다 (false positive "발행 성공" 방지).
+        if is_bridge:
+            log("일출일몰→티스토리 bridge 모드 — 파이프라인 알림 skip", "info")
+            return
         notify_pipeline_result("일출일몰→티스토리", 1, 1, details=title, url=result.url or "")
         if result.url:
             from common.publish_queue import add_url as _add_url
