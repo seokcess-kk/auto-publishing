@@ -343,12 +343,19 @@ def _kill_other_scheduler_instances() -> int:
 
     # (b) cmdline 매칭
     marker = "pipelines.scheduler_runner"
+    my_ppid = os.getppid()
     if sys.platform == "win32":
         try:
+            # venv 의 Scripts\python.exe 는 launcher 로서 실제 인터프리터를 자식으로
+            # spawn 하는 구성이 있어, 동일 cmdline 의 python 이 부모/자식 2개 잡힌다.
+            # my_pid 만 제외하면 가드가 자기 짝(형제 python)을 taskkill /F 해버려
+            # 프로세스 트리가 통째로 죽는다(= traceback 없는 exit 1). 내 프로세스
+            # 트리(부모 PID + 내가 부모인 자식)를 함께 제외해야 안전하다.
             ps_cmd = (
                 "Get-CimInstance Win32_Process | "
                 f"Where-Object {{ $_.Name -eq 'python.exe' -and $_.CommandLine -like '*{marker}*' "
-                f"-and $_.ProcessId -ne {my_pid} }} | "
+                f"-and $_.ProcessId -ne {my_pid} -and $_.ProcessId -ne {my_ppid} "
+                f"-and $_.ParentProcessId -ne {my_pid} }} | "
                 "ForEach-Object { $_.ProcessId }"
             )
             result = subprocess.run(
