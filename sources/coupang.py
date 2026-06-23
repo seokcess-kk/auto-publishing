@@ -399,15 +399,29 @@ def _fmt_price(price) -> str:
         return f"{price}원" if price else ""
 
 
+# 소스별 subId 접미사 — 전환 리포트(clicks/orders/commission)가 subId 기준
+# 집계이므로, 같은 채널이라도 소스별로 접미사를 붙여 goldbox/bestcategory/keyword
+# 전환을 분리 추적한다. AF코드(lptag)는 그대로라 수수료 귀속은 동일.
+_SRC_SUBID_TAG = {"search": "kw", "goldbox": "gb", "bestcategory": "bc"}
+
+
+def _tagged_subid(channel_id: str, source_mode: str) -> str:
+    """채널ID 에 소스 접미사(-kw/-gb/-bc)를 붙인 subId. 채널이 비면 그대로."""
+    tag = _SRC_SUBID_TAG.get(source_mode, "kw")
+    return f"{channel_id}-{tag}" if channel_id else channel_id
+
+
 def _build_api_product(item: dict, channel_id: str, theme: str = "",
                        source_mode: str = "search") -> dict:
     """파트너스 API item(검색/골드박스 공통 스키마) → 표준 상품 dict.
 
     affiliate_url 은 productUrl 의 lptag(쿠팡 자동태그)를 그대로 쓰지 않고
-    make_partners_link 로 내 AF코드(AF_CODE)+채널로 재조립한다. theme 는 글의
+    make_partners_link 로 내 AF코드(AF_CODE)+채널로 재조립한다. subId 에는 소스
+    접미사를 붙여(_tagged_subid) 소스별 전환을 분리 추적한다. theme 는 글의
     제목/본문/태그에 쓸 주제 — 검색은 검색어, 골드박스는 categoryName 을 넣는다.
     """
     product_url = item.get("productUrl", "")
+    sub_id = _tagged_subid(channel_id, source_mode)
     return {
         "name":           item.get("productName", ""),
         "price":          _fmt_price(item.get("productPrice")),
@@ -420,7 +434,7 @@ def _build_api_product(item: dict, channel_id: str, theme: str = "",
         "review_count":   "0",
         "image":          item.get("productImage", ""),
         "url":            product_url,
-        "affiliate_url":  make_partners_link(product_url, channel_id=channel_id),
+        "affiliate_url":  make_partners_link(product_url, channel_id=sub_id),
         "is_rocket":      bool(item.get("isRocket")),
         "is_free_shipping": bool(item.get("isFreeShipping")),
         "rank":           item.get("rank", 9999),
