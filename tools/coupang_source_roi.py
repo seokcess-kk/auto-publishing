@@ -33,20 +33,17 @@ def _source_of(sub_id: str) -> str:
     return "kw"
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=7, help="어제부터 거슬러 집계할 일수")
-    args = ap.parse_args()
-
+def _build_report(days: int) -> str:
+    """소스별 전환 리포트 텍스트 생성."""
     end   = date.today() - timedelta(days=1)        # 당일은 미집계 → 어제까지
-    start = end - timedelta(days=max(args.days, 1) - 1)
+    start = end - timedelta(days=max(days, 1) - 1)
     rows  = fetch_daily_stats(start, end)
 
-    print(f"\n쿠팡 소스별 전환 — {start} ~ {end} ({args.days}일)\n")
+    out = [f"쿠팡 소스별 전환 — {start} ~ {end} ({days}일)", ""]
     if not rows:
-        print("데이터 없음 — 아직 클릭/주문이 없거나(배포 직후), 자격 미설정.")
-        print("며칠 운영 후 다시 실행하세요.")
-        return
+        out.append("데이터 없음 — 아직 클릭/주문이 없거나(배포 직후), 자격 미설정.")
+        out.append("며칠 더 운영 후 다시 실행하세요.")
+        return "\n".join(out)
 
     agg: dict = {}
     for r in rows:
@@ -55,27 +52,42 @@ def main() -> None:
         for k in ("clicks", "orders", "commission", "gmv"):
             a[k] += int(r.get(k, 0) or 0)
 
-    header = f"{'소스':<18}{'클릭':>8}{'주문':>7}{'수수료':>11}{'전환율':>9}{'클릭당수수료':>13}"
-    print(header)
-    print("-" * 64)
     total = {"clicks": 0, "orders": 0, "commission": 0}
+    out.append(f"{'소스':<16}{'클릭':>7}{'주문':>6}{'수수료':>10}{'전환율':>8}")
+    out.append("-" * 48)
     for tag in ("gb", "bc", "kw"):
         a = agg.get(tag)
         if not a:
             continue
-        cr  = (a["orders"] / a["clicks"] * 100) if a["clicks"] else 0.0
-        cpc = (a["commission"] / a["clicks"]) if a["clicks"] else 0.0
-        print(f"{_SRC_LABEL[tag]:<18}{a['clicks']:>8}{a['orders']:>7}"
-              f"{a['commission']:>11,}{cr:>8.1f}%{cpc:>12,.0f}")
+        cr = (a["orders"] / a["clicks"] * 100) if a["clicks"] else 0.0
+        out.append(f"{_SRC_LABEL[tag]:<16}{a['clicks']:>7}{a['orders']:>6}"
+                   f"{a['commission']:>10,}{cr:>7.1f}%")
         for k in total:
             total[k] += a[k]
-
     cr = (total["orders"] / total["clicks"] * 100) if total["clicks"] else 0.0
-    print("-" * 64)
-    print(f"{'합계':<18}{total['clicks']:>8}{total['orders']:>7}"
-          f"{total['commission']:>11,}{cr:>8.1f}%")
-    print("\n해석: 전환율=주문/클릭, 클릭당수수료=수수료/클릭. 둘 다 높은 소스에"
-          " 비중(.env 의 COUPANG_*_RATIO)을 더 주면 됨.")
+    out.append("-" * 48)
+    out.append(f"{'합계':<16}{total['clicks']:>7}{total['orders']:>6}"
+               f"{total['commission']:>10,}{cr:>7.1f}%")
+    out.append("")
+    out.append("해석: 전환율=주문/클릭. 전환율·수수료 높은 소스에 비중"
+               "(.env COUPANG_*_RATIO)을 더 주면 됨.")
+    return "\n".join(out)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=7, help="어제부터 거슬러 집계할 일수")
+    ap.add_argument("--telegram", action="store_true",
+                    help="결과를 텔레그램으로도 전송 (예약 작업용)")
+    args = ap.parse_args()
+
+    report = _build_report(args.days)
+    print("\n" + report)
+
+    if args.telegram:
+        from common.notifier import _send_telegram
+        ok = _send_telegram("📊 " + report)
+        print("\n[텔레그램 전송]", "성공" if ok else "실패(토큰/CHAT_ID 확인)")
 
 
 if __name__ == "__main__":
