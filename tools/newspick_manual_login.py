@@ -47,6 +47,24 @@ def _session_cookie_value(context):
     return None
 
 
+def _logged_in(context) -> bool:
+    """로그인 완료 여부 — 비-login partners 페이지(/main 등) 도달 + SESSION 존재.
+
+    sources.newspick._page_has_session 과 동일한 기준. partners 는 로그인 후에도
+    SESSION 값을 그대로 유지하므로 '값 변화'로는 감지 불가 → URL 로 판정한다.
+    """
+    if not _session_cookie_value(context):
+        return False
+    for pg in context.pages:
+        try:
+            u = pg.url
+        except Exception:
+            continue
+        if "partners.newspic.kr" in u and "/login" not in u:
+            return True
+    return False
+
+
 def _watch_popups(context) -> None:
     """새 페이지(popup) 등장 시 즉시 전면으로 가져오고 URL 출력."""
     def on_page(p):
@@ -99,11 +117,11 @@ def collect() -> bool:
         print("카카오 버튼을 누르면 popup 창이 뜹니다. 작업표시줄/Alt-Tab 으로 확인하세요.")
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
 
-        # 로그인 완료를 SESSION 쿠키로 자동 감지 (폴링). input() 으로 Enter 를
-        # 기다리지 않으므로 비대화형 실행(`! python ...`, 파이프 등)에서도
-        # EOFError 없이 동작한다. 프로필에 남은 만료 쿠키를 오인하지 않도록
-        # '시작 시점과 다른 새 SESSION 값'이 생겼을 때만 성공으로 본다.
-        initial = _session_cookie_value(context)
+        # 로그인 완료 자동 감지 (폴링). input() 으로 Enter 를 기다리지 않으므로
+        # 비대화형 실행(`! python ...`, 파이프)에서도 EOFError 없이 동작한다.
+        # ⚠️ partners 는 익명에게도 SESSION 을 발급하고 로그인 후에도 같은 SESSION
+        # 값을 유지하므로 'SESSION 값 변화'로는 감지 불가(과거 false negative 원인).
+        # 대신 '비-login 페이지(/main 등) 도달 + SESSION 존재'를 성공으로 본다.
         wait_sec = int(os.getenv("NEWSPICK_LOGIN_WAIT_SEC", "300"))
         print(f">>> 브라우저에서 로그인하세요. 로그인이 감지되면 자동 저장됩니다 "
               f"— 최대 {wait_sec}s 대기 <<<")
@@ -111,10 +129,9 @@ def collect() -> bool:
         detected = False
         while time.time() < deadline:
             try:
-                cur = _session_cookie_value(context)
-                if cur and cur != initial:
+                if _logged_in(context):
                     detected = True
-                    print("로그인 감지됨 — 새 SESSION 쿠키 확인.")
+                    print("로그인 감지됨 — partners 관리 페이지 + SESSION 확인.")
                     break
             except Exception:
                 pass
