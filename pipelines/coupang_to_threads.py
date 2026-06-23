@@ -166,10 +166,11 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         notify_pipeline_result("쿠팡→Threads", 0, 1, details=f"수집 실패 ({kw})")
         return
     product = products[0]
-    # 골드박스 등으로 상품 테마가 키워드와 다를 수 있다 → 상품의 테마를 우선 사용
-    # (검색 상품은 product["keyword"]==kw 라 동일, 골드박스는 categoryName).
+    # 골드박스/베스트카테고리 등으로 상품 테마가 키워드와 다를 수 있다 → 상품의
+    # 테마를 우선 사용 (검색 상품은 product["keyword"]==kw 라 동일, 큐레이션은
+    # categoryName).
     theme = product.get("keyword") or kw
-    is_goldbox = product.get("source_mode") == "goldbox"
+    is_curated = product.get("source_mode") in ("goldbox", "bestcategory")
 
     # 3) 어필리에이트 단축링크
     aff_url = product.get("affiliate_url", "") or product.get("url", "") or ""
@@ -191,8 +192,8 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
 
     if result.success:
         log(f"발행 완료: {result.url}", "ok")
-        # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
-        if not keyword and not is_goldbox:
+        # 큐레이션(골드박스/베스트카테고리)은 풀 키워드를 소비하지 않아 used 기록 skip.
+        if not keyword and not is_curated:
             try:
                 mark_keywords_used([kw])
             except Exception as e:

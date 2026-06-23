@@ -517,6 +517,64 @@ def _goldbox_search(count: int = 10, channel_id: str = "") -> list:
         return []
 
 
+# 베스트카테고리 기본 화이트리스트 — 수수료/전환 괜찮은 소비재 위주.
+# (도서/음반·로켓프레시(식품)·문구 등 저단가/저수수료 카테고리는 제외)
+# 1010 뷰티 / 1011 출산·유아 / 1013 생활용품 / 1014 패션의류 / 1016 가전디지털 /
+# 1017 스포츠·레저 / 1020 주방용품 / 1029 반려·애완 / 1030 패션잡화
+_DEFAULT_BEST_CATEGORIES = "1010,1011,1013,1014,1016,1017,1020,1029,1030"
+
+
+def _bestcategories_search(count: int = 10, channel_id: str = "") -> list:
+    """쿠팡 카테고리 베스트셀러 소싱 — 키워드 없이 카테고리 1위권(검증된 판매 실적).
+
+    COUPANG_BEST_CATEGORIES(쉼표구분 카테고리ID) 중 하나를 랜덤 선택해 베스트셀러를
+    가져온다. 이미 잘 팔리는 상품이라 전환이 높다. 테마는 상품 categoryName. limit
+    최대 100 이라 넉넉히 받아 가격밴드 필터 후 랜덤 샘플(다양성)로 count 만큼 자른다.
+    """
+    if not ACCESS_KEY or not SECRET_KEY:
+        return []
+    cid  = channel_id or CHANNEL_ID
+    cats = [c.strip() for c in
+            os.getenv("COUPANG_BEST_CATEGORIES", _DEFAULT_BEST_CATEGORIES).split(",")
+            if c.strip()]
+    if not cats:
+        return []
+    cat_id = random.choice(cats)
+    path  = f"/v2/providers/affiliate_open_api/apis/openapi/v1/products/bestcategories/{cat_id}"
+    query = f"limit=50&subId={cid}"   # limit 최대 100
+    dt    = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
+    sig   = _hmac.new(SECRET_KEY.encode(), (dt + "GET" + path + query).encode(),
+                      hashlib.sha256).hexdigest()
+    auth  = f"CEA algorithm=HmacSHA256, access-key={ACCESS_KEY}, signed-date={dt}, signature={sig}"
+    try:
+        res = requests.get(
+            f"https://api-gateway.coupang.com{path}?{query}",
+            headers={"Authorization": auth, "Content-Type": "application/json;charset=UTF-8"},
+            timeout=15,
+        )
+        if not res.ok:
+            log(f"베스트카테고리 API 실패: {res.status_code}", "warn")
+            return []
+        items = res.json().get("data", []) or []
+        priced = [it for it in items if _price_ok(it.get("productPrice"))]
+        if not priced and items:
+            log("베스트카테고리 가격밴드로 전부 제외 → 필터 미적용 폴백", "warn")
+            priced = items
+        random.shuffle(priced)   # 다양성 — 같은 카테고리 1위 반복 발행 방지
+        products = [
+            _build_api_product(it, cid,
+                               theme=(it.get("categoryName") or "추천"),
+                               source_mode="bestcategory")
+            for it in priced[:count]
+        ]
+        log(f"베스트카테고리(cat={cat_id}) 결과: {len(products)}개 "
+            f"(가격밴드 통과 {len(priced)}/{len(items)})", "ok")
+        return products
+    except Exception as e:
+        log(f"베스트카테고리 오류: {e}", "warn")
+        return []
+
+
 # ─── CoupangSource 클래스 ─────────────────────────────────────────────────────
 
 class CoupangSource:
@@ -559,20 +617,32 @@ class CoupangSource:
         log(f"쿠팡 검색: {keyword} (channel={self.channel_id})", "step")
         from common.product_html import sort_products_by_popularity
 
-        # 골드박스 모드 — API 우선일 때만, COUPANG_GOLDBOX_RATIO 확률로 당일 특가
-        # 소싱. 할인 큐레이션 + 가격밴드로 "수수료 잘 나오는 살 만한" 상품을 노린다.
-        # 상품 dict 의 keyword=categoryName, source_mode="goldbox" 로 호출부가 테마를
-        # 키워드 대신 쓰게 한다.
-        try:
-            gb_ratio = float(os.getenv("COUPANG_GOLDBOX_RATIO", "0.3") or 0)
-        except ValueError:
-            gb_ratio = 0.0
-        if self.use_api_first and gb_ratio > 0 and random.random() < gb_ratio:
-            gb = _goldbox_search(count, channel_id=self.channel_id)
-            if gb:
-                log(f"골드박스 모드 발행 ({len(gb)}개)", "ok")
-                return gb
-            log("골드박스 결과 없음 → 일반 검색으로 진행", "info")
+        # 큐레이션 소싱 — API 우선일 때만, 키워드검색 대신 골드박스(당일 특가)/
+        # 베스트카테고리(카테고리 베스트셀러)를 확률적으로 사용. 슬라이스가 겹치지
+        # 않게 한 번의 random 으로 분기한다. 예: GOLDBOX=0.3, BESTCATEGORY=0.2 →
+        # 골드박스 30% · 베스트카테고리 20% · 키워드검색 50%. 상품 dict 의
+        # keyword=categoryName, source_mode 로 호출부가 테마를 키워드 대신 쓰게 한다.
+        def _ratio(name: str, default: str) -> float:
+            try:
+                return float(os.getenv(name, default) or 0)
+            except ValueError:
+                return 0.0
+        gb_ratio = _ratio("COUPANG_GOLDBOX_RATIO", "0.3")
+        bc_ratio = _ratio("COUPANG_BESTCATEGORY_RATIO", "0.2")
+        if self.use_api_first and (gb_ratio > 0 or bc_ratio > 0):
+            roll = random.random()
+            if roll < gb_ratio:
+                gb = _goldbox_search(count, channel_id=self.channel_id)
+                if gb:
+                    log(f"골드박스 모드 발행 ({len(gb)}개)", "ok")
+                    return gb
+                log("골드박스 결과 없음 → 일반 검색으로 진행", "info")
+            elif roll < gb_ratio + bc_ratio:
+                bc = _bestcategories_search(count, channel_id=self.channel_id)
+                if bc:
+                    log(f"베스트카테고리 모드 발행 ({len(bc)}개)", "ok")
+                    return bc
+                log("베스트카테고리 결과 없음 → 일반 검색으로 진행", "info")
 
         if self.use_api_first:
             products = _api_search(keyword, count, channel_id=self.channel_id)

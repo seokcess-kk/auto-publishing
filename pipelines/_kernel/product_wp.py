@@ -91,9 +91,9 @@ def run(cfg: ProductWpConfig, profile_name: str = None,
                 log(f"'{keyword}' 상품 없음, 건너뜀", "warn")
                 continue
 
-            # 골드박스면 상품 테마(categoryName)를 키워드 대신 사용.
+            # 큐레이션(골드박스/베스트카테고리)이면 상품 테마(categoryName)를 키워드 대신 사용.
             theme = products[0].get("keyword") or keyword
-            is_goldbox = products[0].get("source_mode") == "goldbox"
+            is_curated = products[0].get("source_mode") in ("goldbox", "bestcategory")
             title, content, excerpt, slug = _build_content(theme, products, cfg.theme)
 
             result = publisher.post_with_ids(
@@ -108,8 +108,8 @@ def run(cfg: ProductWpConfig, profile_name: str = None,
 
             if result.success:
                 published += 1
-                # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
-                if not is_goldbox:
+                # 큐레이션(골드박스/베스트카테고리)은 풀 키워드 미소비 → used 기록 skip.
+                if not is_curated:
                     published_keywords.append(keyword)
                 if result.url:
                     last_url = result.url

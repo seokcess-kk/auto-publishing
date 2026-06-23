@@ -120,10 +120,10 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
 
     try:
         for kw, products in collected:
-            # 골드박스면 상품 테마(categoryName)를 키워드 대신 사용 — 제목/본문/태그
-            # 일관성. 검색 상품은 product["keyword"]==kw 라 동일.
+            # 큐레이션(골드박스/베스트카테고리)이면 상품 테마(categoryName)를 키워드
+            # 대신 사용 — 제목/본문/태그 일관성. 검색 상품은 product["keyword"]==kw 라 동일.
             theme = products[0].get("keyword") or kw
-            is_goldbox = products[0].get("source_mode") == "goldbox"
+            is_curated = products[0].get("source_mode") in ("goldbox", "bestcategory")
             title, content, _excerpt, _slug = _build_content(theme, products)
             image_url = products[0].get("image", "")
             ai_tags = generate_related_tags(
@@ -141,8 +141,8 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
             )
             if result.success:
                 published += 1
-                # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
-                if not is_goldbox:
+                # 큐레이션(골드박스/베스트카테고리)은 풀 키워드 미소비 → used 기록 skip.
+                if not is_curated:
                     published_keywords.append(kw)
                 if result.url:
                     last_url = result.url
