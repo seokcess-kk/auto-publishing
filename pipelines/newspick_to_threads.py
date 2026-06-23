@@ -22,7 +22,7 @@ load_dotenv()
 from common.ai_intro import generate_newspick_threads_caption
 from common.logger import log
 from publishers.threads import ThreadsPublisher
-from sources.newspick import NewspickSource
+from sources.newspick import NewspickSource, resolve_category
 
 
 SCHEDULE = {
@@ -34,6 +34,9 @@ SCHEDULE = {
 
 def run(category: str = "추천") -> None:
     """뉴스픽 기사 1건 크롤링 → Threads 발행."""
+    # 카테고리 회전 — '추천'이면 매 발행 랜덤 카테고리로 소스 다변화 (이후 fetch +
+    # 캡션/태그 생성이 모두 이 카테고리를 사용).
+    category = resolve_category(category)
     log(f"[뉴스픽→Threads] 시작 (category={category})", "step")
 
     # 1) 뉴스픽 세션 + 기사 1건

@@ -21,7 +21,7 @@ from common.product_card import (
     keywords_for_cate_code,
     render_product_card,
 )
-from sources.newspick import NewspickSource
+from sources.newspick import NewspickSource, resolve_category
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _HISTORY_PATH = os.path.join(_BASE_DIR, "data", "newspick_published.json")
@@ -136,6 +136,11 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
     순서로 직렬화해야 한다.
     """
     newspick = NewspickSource(referral_code=os.getenv("NEWSPICK_REFERRAL", ""))
+
+    # 카테고리 회전 — '추천'이면 매 발행 랜덤 카테고리로 소스 다변화. 이후 fetch +
+    # 제목/본문/태그 생성이 모두 이 카테고리를 쓰므로 일관성 유지된다.
+    category = resolve_category(category)
+    log(f"발행 카테고리: {category}", "info")
 
     # 1) 뉴스픽 세션 + 기사 수집 (sync_playwright 일회성 사용 후 해제)
     if not newspick.ensure_session():

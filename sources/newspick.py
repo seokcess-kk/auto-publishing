@@ -54,6 +54,34 @@ NEWSPICK_CATEGORIES = {
 }
 
 
+# 카테고리 회전 기본 풀 — 수익(상품매칭) 가능 + 참여도 높은 소프트 카테고리 위주.
+# 하드뉴스(정치/사회/사건사고)는 상품카드가 skip 되고 민감하므로 기본 제외.
+_DEFAULT_ROTATE_CATEGORIES = (
+    "연예가화제,TV연예,K-뮤직,생활픽,스포츠,반려동물,경제,유머이슈,글로벌"
+)
+
+
+def resolve_category(category: str) -> str:
+    """발행 카테고리 결정 — '추천'/빈값이면 회전 풀에서 랜덤 1개를 고른다.
+
+    기존엔 '추천'이 NEWSPICK_CATEGORIES 에 없어 메인(1)으로만 폴백 → 매 발행이 같은
+    풀이었다. 이제 '추천'(또는 빈값/'rotate')이면 NEWSPICK_CATEGORIES_ROTATE
+    (쉼표구분 카테고리명) 중 하나를 랜덤 선택해 소스를 다변화한다. 명시적 카테고리
+    (예: '경제')는 그대로 고정. NEWSPICK_CATEGORY_ROTATE=false 면 기존 메인 동작.
+    """
+    cat = (category or "").strip()
+    if cat not in ("", "추천", "rotate"):
+        return category  # 명시적 카테고리 고정
+    if os.getenv("NEWSPICK_CATEGORY_ROTATE", "true").strip().lower() != "true":
+        return "메인"
+    pool = [c.strip() for c in
+            os.getenv("NEWSPICK_CATEGORIES_ROTATE", _DEFAULT_ROTATE_CATEGORIES).split(",")
+            if c.strip() and c.strip() in NEWSPICK_CATEGORIES]
+    if not pool:
+        return "메인"
+    return random.choice(pool)
+
+
 class NewspickSource:
     """뉴스픽 파트너스에서 콘텐츠를 수집하고 단축 링크를 생성하는 클래스."""
 
