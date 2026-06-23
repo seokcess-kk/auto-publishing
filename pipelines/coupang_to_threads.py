@@ -166,6 +166,10 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         notify_pipeline_result("쿠팡→Threads", 0, 1, details=f"수집 실패 ({kw})")
         return
     product = products[0]
+    # 골드박스 등으로 상품 테마가 키워드와 다를 수 있다 → 상품의 테마를 우선 사용
+    # (검색 상품은 product["keyword"]==kw 라 동일, 골드박스는 categoryName).
+    theme = product.get("keyword") or kw
+    is_goldbox = product.get("source_mode") == "goldbox"
 
     # 3) 어필리에이트 단축링크
     aff_url = product.get("affiliate_url", "") or product.get("url", "") or ""
@@ -179,15 +183,16 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         notify_pipeline_result("쿠팡→Threads", 0, 1, details="인증 실패")
         return
 
-    # 5) 모드별 발행
+    # 5) 모드별 발행 (테마는 상품 기준 — 골드박스면 categoryName)
     if mode == "single":
-        result = _publish_single(pub, kw, product, short_link)
+        result = _publish_single(pub, theme, product, short_link)
     else:
-        result = _publish_chain(pub, kw, product, short_link)
+        result = _publish_chain(pub, theme, product, short_link)
 
     if result.success:
         log(f"발행 완료: {result.url}", "ok")
-        if not keyword:
+        # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
+        if not keyword and not is_goldbox:
             try:
                 mark_keywords_used([kw])
             except Exception as e:

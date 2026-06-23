@@ -91,7 +91,10 @@ def run(cfg: ProductWpConfig, profile_name: str = None,
                 log(f"'{keyword}' 상품 없음, 건너뜀", "warn")
                 continue
 
-            title, content, excerpt, slug = _build_content(keyword, products, cfg.theme)
+            # 골드박스면 상품 테마(categoryName)를 키워드 대신 사용.
+            theme = products[0].get("keyword") or keyword
+            is_goldbox = products[0].get("source_mode") == "goldbox"
+            title, content, excerpt, slug = _build_content(theme, products, cfg.theme)
 
             result = publisher.post_with_ids(
                 title=title,
@@ -105,13 +108,15 @@ def run(cfg: ProductWpConfig, profile_name: str = None,
 
             if result.success:
                 published += 1
-                published_keywords.append(keyword)
+                # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
+                if not is_goldbox:
+                    published_keywords.append(keyword)
                 if result.url:
                     last_url = result.url
                     from common.publish_queue import add_url as _add_url
                     _add_url(
                         result.url, platform="wordpress", title=title,
-                        keyword=keyword, source=cfg.source_kind,
+                        keyword=theme, source=cfg.source_kind,
                         affiliate_url=(products[0].get("affiliate_url", "") or
                                         products[0].get("url", "")),
                     )

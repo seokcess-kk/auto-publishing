@@ -120,13 +120,17 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
 
     try:
         for kw, products in collected:
-            title, content, _excerpt, _slug = _build_content(kw, products)
+            # 골드박스면 상품 테마(categoryName)를 키워드 대신 사용 — 제목/본문/태그
+            # 일관성. 검색 상품은 product["keyword"]==kw 라 동일.
+            theme = products[0].get("keyword") or kw
+            is_goldbox = products[0].get("source_mode") == "goldbox"
+            title, content, _excerpt, _slug = _build_content(theme, products)
             image_url = products[0].get("image", "")
             ai_tags = generate_related_tags(
-                title, context=f"쿠팡 상품 / 키워드 {kw}", n=3,
-                exclude=[kw, "쿠팡", "쿠팡파트너스", "추천상품"],
+                title, context=f"쿠팡 상품 / 키워드 {theme}", n=3,
+                exclude=[theme, "쿠팡", "쿠팡파트너스", "추천상품"],
             )
-            tags = [kw, "쿠팡파트너스"] + ai_tags + ["추천상품"]
+            tags = [theme, "쿠팡파트너스"] + ai_tags + ["추천상품"]
 
             result = pub.post(
                 title=title,
@@ -137,7 +141,9 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
             )
             if result.success:
                 published += 1
-                published_keywords.append(kw)
+                # 골드박스는 풀 키워드를 소비하지 않았으므로 used 기록 skip.
+                if not is_goldbox:
+                    published_keywords.append(kw)
                 if result.url:
                     last_url = result.url
                     log(f"발행 완료: {result.url}", "ok")
@@ -145,7 +151,7 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
                         from common.publish_queue import add_url as _add_url
                         _add_url(
                             result.url, platform="tistory", title=title,
-                            keyword=kw, source="coupang",
+                            keyword=theme, source="coupang",
                             affiliate_url=(products[0].get("affiliate_url", "") or
                                             products[0].get("url", "")),
                         )

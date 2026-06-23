@@ -80,9 +80,20 @@ MOBILE_HEIGHT = 844
 
 def _get_page_key(url: str) -> str:
     m = re.search(r"/products/(\d+)", url)
-    return m.group(1) if m else "0"
+    if m:
+        return m.group(1)
+    # 파트너스 API 의 productUrl(link.coupang.com/re/...)은 /products/ 경로가 없고
+    # 상품ID 를 pageKey 쿼리로만 가진다. 이 폴백이 없으면 pageKey=0 으로 빠져
+    # 링크가 정확한 상품으로 안 갈 수 있다.
+    pk = parse.parse_qs(urlparse(url).query).get("pageKey", [None])[0]
+    return pk if pk else "0"
 
 def _get_product_type(url: str) -> str:
+    # API 딥링크는 이미 /re/AFFSDP|AFFTDP 를 포함 — 그 타입을 그대로 보존.
+    if "AFFSDP" in url:
+        return "AFFSDP"
+    if "AFFTDP" in url:
+        return "AFFTDP"
     return "AFFSDP" if "/vp/" in url else "AFFTDP"
 
 def _get_query_val(key: str, url: str):
@@ -356,6 +367,69 @@ def _parse_coupang_html(html: str, keyword: str, count: int,
 
 # ─── 파트너스 API (옵션) ──────────────────────────────────────────────────────
 
+def _price_ok(price) -> bool:
+    """가격밴드(COUPANG_MIN_PRICE~MAX_PRICE) 통과 여부.
+
+    너무 싼 상품은 수수료(가격의 일정 %)가 적고, 너무 비싼 상품은 전환이 낮다.
+    "할인으로 살 만한 중간 가격대"만 남겨 수수료 효율을 높인다. 가격 불명은 통과.
+    min/max 가 0/빈값이면 해당 경계 미적용.
+    """
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return True
+    try:
+        lo = float(os.getenv("COUPANG_MIN_PRICE", "15000") or 0)
+        hi = float(os.getenv("COUPANG_MAX_PRICE", "200000") or 0)
+    except ValueError:
+        lo, hi = 0.0, 0.0
+    if lo and p < lo:
+        return False
+    if hi and p > hi:
+        return False
+    return True
+
+
+def _fmt_price(price) -> str:
+    """productPrice → '34,900원'. 골드박스는 float(34900.0)로 와서 그대로 쓰면
+    '34900.0원' 으로 노출되므로 정수+천단위 콤마로 정규화한다."""
+    try:
+        return f"{int(float(price)):,}원"
+    except (TypeError, ValueError):
+        return f"{price}원" if price else ""
+
+
+def _build_api_product(item: dict, channel_id: str, theme: str = "",
+                       source_mode: str = "search") -> dict:
+    """파트너스 API item(검색/골드박스 공통 스키마) → 표준 상품 dict.
+
+    affiliate_url 은 productUrl 의 lptag(쿠팡 자동태그)를 그대로 쓰지 않고
+    make_partners_link 로 내 AF코드(AF_CODE)+채널로 재조립한다. theme 는 글의
+    제목/본문/태그에 쓸 주제 — 검색은 검색어, 골드박스는 categoryName 을 넣는다.
+    """
+    product_url = item.get("productUrl", "")
+    return {
+        "name":           item.get("productName", ""),
+        "price":          _fmt_price(item.get("productPrice")),
+        "original_price": "",
+        "discount_rate":  "",
+        # API 는 별점/리뷰수를 안 주는 대신 isRocket(로켓배송)을 준다.
+        # arrival_time 에 넣으면 카드가 🚀 배지로 노출 → 전환 신호 복구.
+        "arrival_time":   "로켓배송" if item.get("isRocket") else "",
+        "rating":         "",
+        "review_count":   "0",
+        "image":          item.get("productImage", ""),
+        "url":            product_url,
+        "affiliate_url":  make_partners_link(product_url, channel_id=channel_id),
+        "is_rocket":      bool(item.get("isRocket")),
+        "is_free_shipping": bool(item.get("isFreeShipping")),
+        "rank":           item.get("rank", 9999),
+        # 콘텐츠 테마 — 호출부에서 product["keyword"] or kw 로 사용.
+        "keyword":        theme or item.get("keyword", ""),
+        "source_mode":    source_mode,
+    }
+
+
 def _api_search(keyword: str, count: int = 10,
                 channel_id: str = "") -> list:
     """쿠팡 파트너스 API 검색 (ACCESS_KEY/SECRET_KEY 필요)."""
@@ -364,7 +438,10 @@ def _api_search(keyword: str, count: int = 10,
 
     cid   = channel_id or CHANNEL_ID
     path  = "/v2/providers/affiliate_open_api/apis/openapi/v1/products/search"
-    query = f"keyword={parse.quote(keyword)}&limit={count}&subId={cid}"
+    # products/search 의 limit 최대값은 10 (15+ 는 rCode=400 'limit is out of range').
+    # 가격밴드로 일부가 걸러질 것을 감안해 허용 최대치까지 받아 필터 후 count 만큼 자른다.
+    fetch = min(10, max(count, 10))
+    query = f"keyword={parse.quote(keyword)}&limit={fetch}&subId={cid}"
     dt    = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
     msg   = dt + "GET" + path + query
     sig   = _hmac.new(SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
@@ -380,24 +457,63 @@ def _api_search(keyword: str, count: int = 10,
             log(f"파트너스 API 실패: {res.status_code}", "warn")
             return []
         items = res.json().get("data", {}).get("productData", [])
-        products = []
-        for item in items[:count]:
-            products.append({
-                "name":           item.get("productName", ""),
-                "price":          f"{item.get('productPrice', '')}원",
-                "original_price": "",
-                "discount_rate":  "",
-                "arrival_time":   "",
-                "rating":         str(item.get("productRating", "")),
-                "review_count":   str(item.get("productReviewCount", "0")),
-                "image":          item.get("productImage", ""),
-                "url":            item.get("productUrl", ""),
-                "affiliate_url":  item.get("shortenUrl") or make_partners_link(item.get("productUrl", ""), channel_id=channel_id),
-            })
-        log(f"파트너스 API 결과: {len(products)}개", "ok")
+        # 가격밴드 필터 — 단, 전부 걸리면 미발행 방지를 위해 폴백(필터 미적용).
+        priced = [it for it in items if _price_ok(it.get("productPrice"))]
+        if not priced and items:
+            log("가격밴드로 전부 제외 → 필터 미적용 폴백", "warn")
+            priced = items
+        products = [_build_api_product(it, cid) for it in priced[:count]]
+        # 리뷰수가 없으므로 sort_products_by_popularity 가 무의미 → rank(베스트셀러
+        # 순위) 오름차순으로 정렬해 1위 상품이 상단/CTA 를 차지하게 한다.
+        products.sort(key=lambda p: p.get("rank", 9999))
+        log(f"파트너스 API 결과: {len(products)}개 (가격밴드 통과 {len(priced)}/{len(items)})", "ok")
         return products
     except Exception as e:
         log(f"파트너스 API 오류: {e}", "warn")
+        return []
+
+
+def _goldbox_search(count: int = 10, channel_id: str = "") -> list:
+    """쿠팡 골드박스(당일 특가) 소싱 — 키워드 없이 큐레이션된 고할인 상품.
+
+    골드박스는 할인 폭이 큰 당일 특가라 구매의도가 높다. 테마(keyword)는
+    무의미한 'Gold box' 대신 상품의 categoryName 을 써 제목/본문 일관성을 지킨다.
+    가격밴드 필터 후 랜덤 샘플로 다양성을 줘, 매 발행 같은 1위가 반복되는 걸 막는다.
+    """
+    if not ACCESS_KEY or not SECRET_KEY:
+        return []
+    cid   = channel_id or CHANNEL_ID
+    path  = "/v2/providers/affiliate_open_api/apis/openapi/v1/products/goldbox"
+    query = f"subId={cid}"
+    dt    = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
+    sig   = _hmac.new(SECRET_KEY.encode(), (dt + "GET" + path + query).encode(),
+                      hashlib.sha256).hexdigest()
+    auth  = f"CEA algorithm=HmacSHA256, access-key={ACCESS_KEY}, signed-date={dt}, signature={sig}"
+    try:
+        res = requests.get(
+            f"https://api-gateway.coupang.com{path}?{query}",
+            headers={"Authorization": auth, "Content-Type": "application/json;charset=UTF-8"},
+            timeout=15,
+        )
+        if not res.ok:
+            log(f"골드박스 API 실패: {res.status_code}", "warn")
+            return []
+        items = res.json().get("data", []) or []
+        priced = [it for it in items if _price_ok(it.get("productPrice"))]
+        if not priced and items:
+            log("골드박스 가격밴드로 전부 제외 → 필터 미적용 폴백", "warn")
+            priced = items
+        random.shuffle(priced)   # 다양성 — 매 발행 같은 상품 반복 방지
+        products = [
+            _build_api_product(it, cid,
+                               theme=(it.get("categoryName") or "추천"),
+                               source_mode="goldbox")
+            for it in priced[:count]
+        ]
+        log(f"골드박스 결과: {len(products)}개 (가격밴드 통과 {len(priced)}/{len(items)})", "ok")
+        return products
+    except Exception as e:
+        log(f"골드박스 오류: {e}", "warn")
         return []
 
 
@@ -442,6 +558,21 @@ class CoupangSource:
         """
         log(f"쿠팡 검색: {keyword} (channel={self.channel_id})", "step")
         from common.product_html import sort_products_by_popularity
+
+        # 골드박스 모드 — API 우선일 때만, COUPANG_GOLDBOX_RATIO 확률로 당일 특가
+        # 소싱. 할인 큐레이션 + 가격밴드로 "수수료 잘 나오는 살 만한" 상품을 노린다.
+        # 상품 dict 의 keyword=categoryName, source_mode="goldbox" 로 호출부가 테마를
+        # 키워드 대신 쓰게 한다.
+        try:
+            gb_ratio = float(os.getenv("COUPANG_GOLDBOX_RATIO", "0.3") or 0)
+        except ValueError:
+            gb_ratio = 0.0
+        if self.use_api_first and gb_ratio > 0 and random.random() < gb_ratio:
+            gb = _goldbox_search(count, channel_id=self.channel_id)
+            if gb:
+                log(f"골드박스 모드 발행 ({len(gb)}개)", "ok")
+                return gb
+            log("골드박스 결과 없음 → 일반 검색으로 진행", "info")
 
         if self.use_api_first:
             products = _api_search(keyword, count, channel_id=self.channel_id)
