@@ -8,6 +8,7 @@
 
 참조: 00.Old_Source/newspic/뉴스픽(requests)_링크생성기_배포용_ver6.py
 """
+import html
 import os
 import random
 import time
@@ -596,7 +597,10 @@ class NewspickSource:
 
         for item in data.get("recomList", []):
             articles.append({
-                "title":      item.get("title", ""),
+                # 파트너스 API 제목은 HTML 엔티티(&ldquo; &rdquo; &hellip; 등)를
+                # 포함 → 소스 단에서 디코딩해 티스토리 제목/Threads 캡션/백링크가
+                # 모두 깨끗한 텍스트를 쓰게 한다.
+                "title":      html.unescape(item.get("title", "") or ""),
                 "url":        item.get("link", ""),
                 "image":      item.get("imgUrl", ""),
                 "category":   category,
@@ -611,7 +615,7 @@ class NewspickSource:
 
         for item in data.get("contentList", []):
             articles.append({
-                "title":      item.get("title", ""),
+                "title":      html.unescape(item.get("title", "") or ""),
                 "url":        item.get("link", ""),
                 "image":      item.get("imgUrl", ""),
                 "category":   category,

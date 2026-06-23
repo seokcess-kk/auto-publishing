@@ -18,6 +18,7 @@ WordPress/Tistory/Blogger URL 수집 모듈 (백링크 소스)
   wordpress_twitter_auto_backlink/ch05_semi_final/
   00.Old_Source/backlink/backlink_tistory_wordpress_naver_link_upload_ver8.py
 """
+import html
 import re
 import xml.etree.ElementTree as ET
 from typing import Iterable, Optional
@@ -136,6 +137,8 @@ def fetch_wp_rest_posts(base_url: str, per_page: int = 100,
             if not link:
                 continue
             title = (it.get("title") or {}).get("rendered", "") if isinstance(it.get("title"), dict) else (it.get("title") or "")
+            # WP 'rendered' 제목은 HTML 엔티티(&ldquo; &hellip; 등)를 포함 → 디코딩.
+            title = html.unescape(title or "")
             records.append({
                 "url": link,
                 "title": title,
@@ -172,9 +175,12 @@ def fetch_tistory_rss(base_url: str) -> list:
         url = (link_el.text or "").strip() if link_el is not None else ""
         if not url:
             continue
+        # RSS 제목의 HTML 엔티티(&ldquo; &rdquo; &hellip; 등) 디코딩 — 플레인텍스트
+        # SNS(Threads/Twitter) 에 엔티티가 그대로 노출되는 것을 방지.
+        title = html.unescape((title_el.text or "").strip()) if title_el is not None else ""
         records.append({
             "url":       url,
-            "title":     (title_el.text or "").strip() if title_el is not None else "",
+            "title":     title,
             "published": (date_el.text  or "").strip() if date_el  is not None else None,
             "source":    "tistory_rss",
         })

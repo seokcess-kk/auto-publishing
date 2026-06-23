@@ -26,6 +26,7 @@
     wordpress_twitter_auto_backlink/ch05_semi_final/
     00.Old_Source/backlink/backlink_tistory_wordpress_naver_link_upload_ver8.py
 """
+import html
 import os
 import random
 import time
@@ -62,6 +63,10 @@ def refresh_url_pool(sites: Iterable[str],
 
 def _build_tweet_text(url: str, title: str, prefix: str) -> str:
     """트윗 본문 — prefix + 제목 + URL. 280자 제한 대응."""
+    # 제목에 남아있을 수 있는 HTML 엔티티(&ldquo; &rdquo; &hellip; 등)를 디코딩.
+    # 추출 시점에서도 처리하지만, 과거 backlink_state 에 저장된 제목이나 다른
+    # 소스를 위해 발행 직전에도 한 번 더 정리한다(html.unescape 는 멱등).
+    title = html.unescape(title or "")
     parts = []
     if prefix:
         parts.append(prefix)
