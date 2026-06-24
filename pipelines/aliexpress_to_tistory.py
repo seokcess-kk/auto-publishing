@@ -91,7 +91,8 @@ def run(count_per_keyword: int = 10,
             log(f"키워드 풀 제외 실패 ({e})", "warn")
 
     if not collected:
-        log("수집된 상품 없음", "warn")
+        _kws = ", ".join(skipped_keywords) if skipped_keywords else "?"
+        log(f"알리 상품 수집 0건 — 발행 불가 (키워드 부적합: {_kws})", "error")
         from common.notifier import notify_pipeline_result
         notify_pipeline_result("알리→티스토리", 0, post_count, details="수집 실패")
         return

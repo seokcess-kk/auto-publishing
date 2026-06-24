@@ -45,18 +45,76 @@ ALIEXPRESS_CATEGORIES = [
     "가구/인테리어", "출산/육아", "스포츠/레저", "생활/건강",
 ]
 
+# 알리에서 검색 0건이 사실상 확정인 키워드 — 명품 브랜드(브랜드 보호로 정품이
+# 노출되지 않음)와 한국 한정 고유명사(영화관·국내 유통 서비스 등). 카테고리
+# 화이트리스트만으로는 못 거른다: 예) '롤렉스시계'가 '패션잡화'로 분류돼 통과
+# → 06-24 16:00 알리→Threads 가 검색 0건으로 발행 실패한 원인. 공백 제거·
+# 소문자화한 키워드에 substring 으로 매칭한다. 일반명사와 충돌하는 브랜드
+# (오메가=오메가3, 코치=coach 등)는 오탐 방지를 위해 일부러 제외했다. 완벽할
+# 필요는 없다 — 누락분은 수집 0건 시 mark_keywords_used 사후 제외로 자가 치유.
+_ALI_UNFIT_BRANDS = {
+    # 명품 시계
+    "롤렉스", "위블로", "파텍필립", "오데마피게", "태그호이어", "브라이틀링",
+    "바쉐론", "브레게", "피아제", "쇼파드", "예거르쿨트르", "iwc",
+    "까르띠에", "카르티에",
+    # 명품 패션/잡화
+    "샤넬", "루이비통", "루이뷔통", "구찌", "에르메스", "프라다", "디올",
+    "불가리", "버버리", "펜디", "발렌시아가", "몽클레르", "보테가베네타",
+    "생로랑", "입생로랑", "발렌티노", "셀린느", "지방시", "베르사체",
+    "미우미우", "로에베", "멀버리", "페라가모", "지미추", "끌로에", "티파니",
+    "반클리프", "고야드", "톰브라운", "메종마르지엘라", "마르지엘라",
+    # 한국 한정 고유명사 (알리 무관 서비스/유통)
+    "cgv", "메가박스", "롯데시네마", "올리브영", "무신사", "다이소",
+}
+
+
+def _is_ali_unfit(keyword: str) -> bool:
+    """알리 검색 0건이 거의 확실한 키워드(명품/국내 고유명사)면 True."""
+    kw = (keyword or "").replace(" ", "").lower()
+    if not kw:
+        return False
+    return any(brand in kw for brand in _ALI_UNFIT_BRANDS)
+
 
 def get_ali_keywords(n: int = 1) -> list:
-    """알리 적합 카테고리만 화이트리스트로 필터한 키워드 풀에서 추출."""
-    from sources.itemscout_keywords import get_next_keywords
-    try:
-        kws = get_next_keywords(n=n, refill_threshold=50, categories=ALIEXPRESS_CATEGORIES)
-        if kws:
-            return kws
-    except Exception as e:
-        log(f"ItemScout 알리 필터 키워드 실패 ({e}), fallback 전체 풀", "warn")
-    # 폴백 — 전체 풀에서
-    return get_keywords(n=n)
+    """알리 적합 카테고리 화이트리스트 + 명품/고유명사 블랙리스트로 필터한
+    키워드 풀에서 n개 추출.
+
+    블랙리스트에 걸린 키워드는 즉시 mark_keywords_used 로 풀에서 영구 제외해
+    다음 실행에서 재추출되지 않게 한다(반복적 1건 손실 방지).
+    """
+    from sources.itemscout_keywords import get_next_keywords, mark_keywords_used
+
+    collected: list[str] = []
+    seen: set[str] = set()
+    for _ in range(8):  # 부적합 키워드가 연속으로 뽑힐 때를 대비한 안전 상한
+        need = n - len(collected)
+        if need <= 0:
+            break
+        try:
+            kws = get_next_keywords(
+                n=need + 2, refill_threshold=50,
+                categories=ALIEXPRESS_CATEGORIES)
+        except Exception as e:
+            log(f"ItemScout 알리 필터 키워드 실패 ({e}), fallback 전체 풀", "warn")
+            kws = get_keywords(n=need)
+
+        fresh = [k for k in kws if k not in seen]
+        if not fresh:
+            break
+        seen.update(fresh)
+
+        unfit = [k for k in fresh if _is_ali_unfit(k)]
+        if unfit:
+            try:
+                mark_keywords_used(unfit)  # 풀에서 영구 제외 (재추출 방지)
+            except Exception as e:
+                log(f"부적합 키워드 풀 제외 실패 ({e})", "warn")
+            log(f"알리 부적합 키워드 건너뜀(명품/고유명사): {unfit}", "info")
+
+        collected.extend(k for k in fresh if k not in unfit)
+
+    return collected[:n]
 
 
 SCHEDULE = {
@@ -241,7 +299,7 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         source, kw, count=1, require_affiliate=True, timeout_sec=search_timeout)
 
     if not products:
-        log(f"'{kw}' 상품/링크 수집 실패 또는 키워드 매칭 부족", "warn")
+        log(f"'{kw}' 알리 상품/제휴링크 수집 0건 — 발행 불가 (키워드 부적합)", "error")
         # 강제 키워드가 아니면 풀에서 점진 제외 — 알리 부적합 키워드 누적 방지
         if not keyword:
             try:
