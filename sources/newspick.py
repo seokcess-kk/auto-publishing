@@ -231,6 +231,48 @@ class NewspickSource:
             log("  간편로그인 모든 셀렉터 클릭 후에도 navigation 미발생", "warn")
         return False
 
+    def _fill_verified(self, page, selectors, value: str, attempts: int = 3) -> bool:
+        """입력 필드에 값을 채우고 input_value 로 실제 반영을 검증한다.
+
+        Kakao 일반 로그인 폼은 입력 직후 프레임워크 리렌더로 fill 값이 날아가
+        '비번 빈 칸 + 로그인 버튼 클릭' 상태로 멈추는 경우가 있다(자동 발행
+        실패의 11:30 모드: popup 스크린샷상 비번 칸이 비어 있음). fill → 검증 →
+        실패 시 click 후 type 으로 재시도해 값이 실제로 들어간 것을 보장한다.
+        """
+        if not value:
+            return False
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() == 0:
+                    continue
+            except Exception:
+                continue
+            for _ in range(attempts):
+                try:
+                    loc.fill(value, timeout=3000)
+                except Exception:
+                    try:
+                        loc.click(timeout=2000)
+                        loc.type(value, delay=30)
+                    except Exception:
+                        break
+                try:
+                    if (loc.input_value() or "") == value:
+                        return True
+                except Exception:
+                    return True  # 값 확인 불가 시 채워진 것으로 간주
+                # 값이 비었으면 클리어 후 type 으로 재시도
+                try:
+                    loc.click(timeout=2000)
+                    loc.fill("", timeout=2000)
+                    loc.type(value, delay=30)
+                    if (loc.input_value() or "") == value:
+                        return True
+                except Exception:
+                    continue
+        return False
+
     def _kakao_login(self, context) -> bool:
         """Kakao SSO 로그인 — Kakao 버튼 클릭으로 뜨는 popup 창에 자동 입력.
 
@@ -318,38 +360,25 @@ class NewspickSource:
                 return False
 
             if on_login_form:
-                # ID 입력
-                id_el = None
-                for sel in id_selectors:
-                    try:
-                        kakao_page.wait_for_selector(sel, timeout=3000, state="visible")
-                        id_el = sel
-                        break
-                    except Exception:
-                        continue
-                if not id_el:
-                    log(f"Kakao popup 에서 ID 필드 감지 실패 (URL: {kakao_page.url})", "warn")
+                # ID 입력 (fill 후 input_value 로 반영 검증 — 리렌더로 값이
+                # 날아가면 click+type 으로 재시도)
+                if not self._fill_verified(kakao_page, id_selectors, email):
+                    log(f"Kakao popup 에서 ID 입력 실패 (URL: {kakao_page.url})", "warn")
                     return False
-                kakao_page.fill(id_el, email)
                 time.sleep(0.3)
 
-                # PW 입력
-                pw_filled = False
-                for sel in pw_selectors:
-                    try:
-                        kakao_page.fill(sel, password)
-                        pw_filled = True
-                        break
-                    except Exception:
-                        continue
-                if not pw_filled:
-                    log("Kakao popup 에서 PW 필드 감지 실패", "warn")
+                # PW 입력 — 동일하게 값 반영을 검증한다. 검증 없이 fill 만 하면
+                # Kakao 폼 리렌더로 비번이 빈 채 로그인 버튼이 눌려 '비번 빈 칸'
+                # 상태로 타임아웃되는 실패(11:30 모드)가 발생한다.
+                if not self._fill_verified(kakao_page, pw_selectors, password):
+                    log("Kakao popup 에서 PW 입력 실패 (값 미반영)", "warn")
                     return False
 
                 # "간편로그인 정보 저장" 체크 — persistent profile 에 신뢰 기기 토큰을 남긴다
                 # Kakao 2026+ accounts.kakao.com 신/구 셀렉터 모두 시도
                 for sel in [
                     # 현행 (2026+)
+                    'label:has-text("로그인 상태 유지")',
                     'label[for="saveSignedIn--4"]',
                     'label[for="saveSignedIn"]',
                     'input[name="saveSignedIn"]',
@@ -399,11 +428,12 @@ class NewspickSource:
 
             # popup 이 닫히거나 원래 page 가 partners.newspic.kr 내부로 이동하면 성공.
             # 중간에 oauth/authorize 동의 화면이 뜨면 "계속하기" 버튼을 자동 클릭한다.
-            deadline = time.time() + 120
+            deadline = time.time() + 90
             last_main = ""
             last_popup = ""
             popup_closed = False
             consent_clicked = False
+            nav_forced = False
             while time.time() < deadline:
                 # popup 이 닫혔는지 + URL 추적
                 if not popup_closed:
@@ -457,6 +487,18 @@ class NewspickSource:
                         popup_closed = True
                         log("  popup 닫힘 감지", "info")
 
+                # oauth 동의를 마쳤거나 popup 이 닫힌 뒤에도 메인 page.url 이
+                # 리다이렉트를 놓치는 레이스가 있다(부하 높은 시간대에 심함 —
+                # 로그인은 됐는데 감지 실패로 타임아웃되는 14:00 모드). 한 번
+                # 메인 대시보드로 명시 이동해 page.url 을 확정짓는다.
+                if (consent_clicked or popup_closed) and not nav_forced:
+                    nav_forced = True
+                    try:
+                        page.goto(f"{PARTNERS_BASE}/main/index",
+                                  wait_until="domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+
                 # 메인 페이지 URL 변화 감지
                 try:
                     cur = page.url
@@ -468,6 +510,13 @@ class NewspickSource:
                 if "partners.newspic.kr" in cur and "/login" not in cur:
                     time.sleep(2)
                     return True
+                # page.url 폴링이 놓쳐도 SESSION 쿠키로 성공을 보조 판정한다.
+                try:
+                    if (consent_clicked or popup_closed) and self._page_has_session(context, page):
+                        time.sleep(1)
+                        return True
+                except Exception:
+                    pass
                 time.sleep(1)
 
             # 타임아웃 시 스크린샷으로 원인 파악
@@ -536,12 +585,19 @@ class NewspickSource:
                     if not self._page_has_session(context, page):
                         # 토큰이 만료됐거나 최초 로그인 — Kakao SSO 전체 플로우 실행
                         log("간편로그인 미적용 — Kakao SSO 자동 로그인 시도", "warn")
-                        if not self._kakao_login(context):
-                            return _auth_failed("Kakao SSO 로그인 실패")
+                        login_ok = self._kakao_login(context)
 
-                        # 재진입 확인
-                        if not self._page_has_session(context, page):
-                            return _auth_failed("로그인은 성공했으나 SESSION 쿠키 미확보")
+                        # _kakao_login 의 page.url 폴링이 oauth 리다이렉트를 놓쳐
+                        # false negative 를 낼 수 있다(로그인은 됐는데 감지 실패 —
+                        # 14:00 모드: 타임아웃 스크린샷이 정상 대시보드였음). 쿠키를
+                        # 주입해 requests API 로 직접 재검증한 뒤 최종 판단한다.
+                        if not login_ok or not self._page_has_session(context, page):
+                            self._inject_cookies(context)
+                            if self._check_session():
+                                self.session_mgr.save()
+                                log("page 감지는 실패했으나 세션 검증 통과 — 로그인 성공 처리", "ok")
+                                return True
+                            return _auth_failed("Kakao SSO 로그인 실패")
 
                     # SESSION 확보 완료 → requests 에 쿠키 주입
                     injected = self._inject_cookies(context)
