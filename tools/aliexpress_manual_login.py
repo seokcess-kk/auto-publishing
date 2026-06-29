@@ -27,6 +27,16 @@ try:
 except Exception:
     pass
 
+# .env 로드 — 발행 파이프라인은 모두 load_dotenv() 로 ALIEXPRESS_TRACKING_ID
+# (=auto_publishing) 를 읽는다. 헬퍼가 이를 빠뜨리면 검증 trackId 가 기본값
+# "wordpress" 로 떨어져, 로그인이 멀쩡해도 portals 제휴 API 가 다른 응답을 줘
+# '자동 감지 실패'가 난다. 발행과 동일한 신호로 검증하려면 여기서도 로드한다.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _DATA_DIR = _BASE_DIR / "data"
 _STORAGE_PATH = _DATA_DIR / "aliexpress_storage.json"

@@ -46,6 +46,13 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "python tools/newspick_manual_login.py 로 수동 로그인",
     ),
     (
+        # 알리 전용 — 제휴 세션 만료. 일반 '수동 로그인 필요'(아래)와 키워드
+        # 미매칭(맨 아래)보다 먼저 매칭돼야 정확한 복구 명령을 안내한다.
+        re.compile(r"알리\s*제휴\s*세션\s*만료|aliexpress_manual_login", re.I),
+        "알리 제휴 세션 만료",
+        "python tools/aliexpress_manual_login.py → 'Continue with Google' 로 로그인",
+    ),
+    (
         re.compile(r"/auth/login|Kakao\s*로그인\s*실패|Kakao\s*페이지\s*전환\s*실패", re.I),
         "Kakao(티스토리) 세션 만료",
         "python -m tools.verify_tistory_login <blog>",

@@ -299,14 +299,21 @@ def run(keyword: "str | None" = None, mode: "str | None" = None) -> None:
         source, kw, count=1, require_affiliate=True, timeout_sec=search_timeout)
 
     if not products:
-        log(f"'{kw}' 알리 상품/제휴링크 수집 0건 — 발행 불가 (키워드 부적합)", "error")
-        # 강제 키워드가 아니면 풀에서 점진 제외 — 알리 부적합 키워드 누적 방지
-        if not keyword:
-            try:
-                mark_keywords_used([kw])
-                log(f"풀 제외: {kw}", "info")
-            except Exception as e:
-                log(f"키워드 풀 제외 실패 ({e})", "warn")
+        # 제휴 세션 만료면 키워드 잘못이 아니다 — 메시지를 구분하고, 멀쩡한
+        # 키워드를 풀에서 제외하지 않는다 (만료 기간 동안 키워드 통째 소실 방지).
+        session_expired = getattr(source, "session_expired", False)
+        if session_expired:
+            log("알리 제휴 세션 만료 — 발행 불가, 수동 로그인 필요: "
+                "python tools/aliexpress_manual_login.py → 'Continue with Google'", "error")
+        else:
+            log(f"'{kw}' 알리 상품/제휴링크 수집 0건 — 발행 불가 (키워드 부적합)", "error")
+            # 강제 키워드가 아니면 풀에서 점진 제외 — 알리 부적합 키워드 누적 방지
+            if not keyword:
+                try:
+                    mark_keywords_used([kw])
+                    log(f"풀 제외: {kw}", "info")
+                except Exception as e:
+                    log(f"키워드 풀 제외 실패 ({e})", "warn")
         from common.notifier import notify_pipeline_result
         notify_pipeline_result("알리→Threads", 0, 1, details=f"수집 실패 ({kw})")
         return

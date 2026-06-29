@@ -185,6 +185,10 @@ class AliexpressSource:
         self._context = None
         self._page = None
         self._session_reset_done = False  # 세션 초기화 1회만
+        # 제휴 세션 만료 감지 플래그 — 검색은 비로그인으로도 되지만 제휴링크
+        # 생성(_shorten_link)이 로그인 HTML 을 받으면 True. 호출자(파이프라인)는
+        # 수집 0건이 '키워드 부적합'인지 '세션 만료'인지 이 값으로 구분한다.
+        self.session_expired = False
 
     # Context manager 지원
     def __enter__(self):
@@ -555,6 +559,7 @@ class AliexpressSource:
                 if "login" in body.lower() or "sign" in body.lower():
                     # storage 를 지우지 않는다 — 유효할 수도 있는 세션을 보존하고
                     # (검색은 비로그인으로도 됨) 수동 Google 재로그인만 안내한다.
+                    self.session_expired = True  # 호출자가 키워드 부적합과 구분
                     log("알리 링크 생성 — 제휴 세션 만료/미가입 감지, 수동 Google 로그인 필요", "warn")
                     try:
                         from common.notifier import notify_login_required
