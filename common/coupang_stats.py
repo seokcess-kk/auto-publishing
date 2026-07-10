@@ -21,8 +21,6 @@ import requests
 from common.logger import log
 
 
-_ACCESS_KEY = os.getenv("COUPANG_ACCESS_KEY", "")
-_SECRET_KEY = os.getenv("COUPANG_SECRET_KEY", "")
 _BASE_URL   = "https://api-gateway.coupang.com"
 # ⚠️ sub-id-channel 엔드포인트는 이 계정에서 404(PRECONDITION_FAILED, 미존재).
 # 실제 동작하는 리포트는 clicks/orders/commission (2026-06-23 프로브 확인).
@@ -30,17 +28,29 @@ _BASE_URL   = "https://api-gateway.coupang.com"
 _REPORTS_BASE = "/v2/providers/affiliate_open_api/apis/openapi/v1/reports/"
 
 
+def _keys() -> tuple[str, str]:
+    """.env 자격을 호출 시점에 읽는다 — import 순서(load_dotenv 이전 import)에
+    따라 빈 키가 모듈에 박제되는 문제 방지."""
+    return os.getenv("COUPANG_ACCESS_KEY", ""), os.getenv("COUPANG_SECRET_KEY", "")
+
+
 def _sign(method: str, path: str, query: str = "") -> str:
     """HmacSHA256 Authorization 헤더 값 생성."""
+    access_key, secret_key = _keys()
     dt  = datetime.now(timezone.utc).strftime("%y%m%dT%H%M%SZ")
     msg = dt + method + path + query
-    sig = hmac.new(_SECRET_KEY.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    return (f"CEA algorithm=HmacSHA256, access-key={_ACCESS_KEY}, "
+    sig = hmac.new(secret_key.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return (f"CEA algorithm=HmacSHA256, access-key={access_key}, "
             f"signed-date={dt}, signature={sig}")
 
 
-def _fetch_report(report: str, s: str, e: str, channel_id: str = "") -> list:
-    """단일 리포트(clicks|orders|commission) 조회 → data 배열. 실패 시 []."""
+def _fetch_report(report: str, s: str, e: str, channel_id: str = "") -> list | None:
+    """단일 리포트(clicks|orders|commission) 조회 → data 배열.
+
+    반환 구분이 ROI 파이프라인의 실패 가시화에 쓰인다:
+      list  — 200 정상 (빈 배열이면 '활동 0건'이라는 정상 응답)
+      None  — HTTP 비정상/예외 (서명 거부·자격 회귀 등 조사 필요한 실패)
+    """
     path  = _REPORTS_BASE + report
     query = f"startDate={s}&endDate={e}"
     if channel_id:
@@ -54,12 +64,12 @@ def _fetch_report(report: str, s: str, e: str, channel_id: str = "") -> list:
             timeout=15,
         )
         if not r.ok:
-            log(f"쿠팡 {report} 리포트 실패: {r.status_code} {r.text[:150]}", "warn")
-            return []
+            log(f"쿠팡 {report} 리포트 실패: {r.status_code} {r.text[:150]}", "error")
+            return None
         return r.json().get("data") or []
     except Exception as ex:
-        log(f"쿠팡 {report} 리포트 오류: {ex}", "warn")
-        return []
+        log(f"쿠팡 {report} 리포트 오류: {ex}", "error")
+        return None
 
 
 def _g(row: dict, cands: tuple):
@@ -80,7 +90,7 @@ def _gi(row: dict, cands: tuple) -> int:
 
 
 def fetch_daily_stats(start_date: date, end_date: date,
-                      channel_id: str = "") -> list:
+                      channel_id: str = "") -> list | None:
     """일별 클릭/주문/수수료 통계 조회 → subId 기준 병합 행.
 
     clicks/orders/commission 리포트를 각각 조회해 subId 로 병합한다. 반환 행은
@@ -93,16 +103,28 @@ def fetch_daily_stats(start_date: date, end_date: date,
         channel_id: 특정 subId 필터 — 빈 값이면 전체
 
     Returns:
-        병합 행 리스트. 실패/자격 미설정 시 빈 리스트.
+        병합 행 리스트 (빈 리스트 = 조회 성공했지만 활동 0건).
+        None = 조회 실패 (자격 미설정/서명 거부/HTTP 오류) — 호출 측이
+        '측정 루프 죽음'으로 가시화해야 하는 상태.
     """
-    if not _ACCESS_KEY or not _SECRET_KEY:
-        log("쿠팡 ACCESS_KEY/SECRET_KEY 미설정 — stats 조회 불가", "warn")
-        return []
+    access_key, secret_key = _keys()
+    if not access_key or not secret_key:
+        log("쿠팡 ACCESS_KEY/SECRET_KEY 미설정 — stats 조회 불가", "error")
+        return None
+    # 쿠팡 HMAC secret 은 40자 hex — 길이 이상은 콘솔 오복사/재발급 무효화의
+    # 대표 증상 (2026-07-10: 41자 키로 모든 엔드포인트 401 회귀).
+    if len(secret_key) != 40:
+        log(f"쿠팡 SECRET_KEY 길이 이상({len(secret_key)}자, 정상 40자) — "
+            "파트너스 콘솔에서 재복사/재발급 필요", "error")
 
     s = start_date.strftime("%Y%m%d")
     e = end_date.strftime("%Y%m%d")
     clicks = _fetch_report("clicks", s, e, channel_id)
     orders = _fetch_report("orders", s, e, channel_id)
+    if clicks is None and orders is None:
+        return None
+    clicks = clicks or []
+    orders = orders or []
 
     agg: dict = {}
 
@@ -134,7 +156,7 @@ def fetch_daily_stats(start_date: date, end_date: date,
     return rows
 
 
-def fetch_yesterday_stats(channel_id: str = "") -> list:
+def fetch_yesterday_stats(channel_id: str = "") -> list | None:
     """어제 1일치 — 일일 ROI 집계용 헬퍼."""
     yesterday = date.today() - timedelta(days=1)
     return fetch_daily_stats(yesterday, yesterday, channel_id)
@@ -145,7 +167,10 @@ if __name__ == "__main__":
     rows = fetch_yesterday_stats()
     yest = date.today() - timedelta(days=1)
     print(f"쿠팡 stats — 어제({yest}):")
-    if not rows:
-        print("  (응답 없음 — 자격 미설정 또는 API 미적용 계정)")
-    for r in rows:
-        print(f"  {json.dumps(r, ensure_ascii=False)}")
+    if rows is None:
+        print("  (조회 실패 — 자격 미설정/서명 거부. 위 [ERROR] 로그 참고)")
+    elif not rows:
+        print("  (활동 0건 — 어제 클릭/주문 없음)")
+    else:
+        for r in rows:
+            print(f"  {json.dumps(r, ensure_ascii=False)}")

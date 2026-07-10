@@ -40,8 +40,12 @@ def _build_report(days: int) -> str:
     rows  = fetch_daily_stats(start, end)
 
     out = [f"쿠팡 소스별 전환 — {start} ~ {end} ({days}일)", ""]
+    if rows is None:
+        out.append("조회 실패 — 자격 미설정/서명 거부(401). 위 [ERROR] 로그 참고.")
+        out.append(".env COUPANG_ACCESS_KEY/SECRET_KEY 를 파트너스 콘솔 값으로 재복사하세요.")
+        return "\n".join(out)
     if not rows:
-        out.append("데이터 없음 — 아직 클릭/주문이 없거나(배포 직후), 자격 미설정.")
+        out.append("활동 0건 — 조회는 성공했지만 기간 내 클릭/주문이 없습니다.")
         out.append("며칠 더 운영 후 다시 실행하세요.")
         return "\n".join(out)
 

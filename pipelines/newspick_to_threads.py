@@ -89,7 +89,8 @@ def run(category: str = "추천") -> None:
         if result.url:
             try:
                 from common.publish_queue import add_url as _add_url
-                _add_url(result.url, platform="threads", title=title)
+                _add_url(result.url, platform="threads", title=title,
+                         source="newspick")
             except Exception:
                 pass
 

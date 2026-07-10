@@ -120,16 +120,28 @@ def run(count_per_keyword: int = 10,
     last_url = ""
     try:
         for keyword, products in collected:
-            title, content, _excerpt, _slug = build_content(keyword, products)
+            try:
+                from common.publish_queue import get_recent_by_platform
+                related = get_recent_by_platform("tistory", 3)
+            except Exception:
+                related = []
+            title, content, _excerpt, _slug = build_content(
+                keyword, products, related_links=related)
             image_url = products[0].get("image", "")
             tags = [keyword, "알리익스프레스", "해외직구", "추천상품"]
 
+            # bridge 모드 publish_queue 귀속 meta — /done 핸들러가 큐 아이템에서
+            # 넘겨받아 기록 (아래 _add_url 은 web 모드 전용).
             result = pub.post(
                 title=title,
                 content=content,
                 tags=tags,
                 image_url=image_url,
                 category=os.getenv("TISTORY_CATEGORY", ""),
+                keyword=keyword,
+                source="aliexpress",
+                affiliate_url=(products[0].get("affiliate_url", "") or
+                               products[0].get("url", "")),
             )
             if result.success:
                 published += 1

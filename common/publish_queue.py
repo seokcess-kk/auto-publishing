@@ -101,6 +101,16 @@ def add_url(url: str, platform: str, title: str = "",
     return True
 
 
+def get_recent_by_platform(platform: str, n: int = 3,
+                           queue_path: str = DEFAULT_QUEUE_PATH) -> list:
+    """플랫폼별 최근 발행 글 n건 (최신순) — 본문 내부링크 블록용."""
+    data = _load(queue_path)
+    rows = [it for it in data
+            if it.get("platform") == platform
+            and it.get("url") and it.get("title")]
+    return rows[-n:][::-1]
+
+
 def get_pending(field: str,
                 queue_path: str = DEFAULT_QUEUE_PATH) -> list:
     """field 기준 미완료("X") 항목 반환.

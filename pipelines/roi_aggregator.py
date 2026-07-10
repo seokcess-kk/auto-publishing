@@ -177,16 +177,31 @@ def run() -> None:
             _save_json(ROI_PATH, roi_db)
         return
 
-    # 2) 쿠팡 stats 조회
+    # 알리 집계분은 쿠팡 조회 결과와 무관하게 보존해야 한다 — 아래 early return
+    # 경로들에서 함께 저장.
+    def _save_ali_partial() -> None:
+        if ali_processed > 0:
+            _save_json(ROI_PATH, roi_db)
+
+    # 2) 쿠팡 stats 조회 — None(조회 실패)과 [](활동 0건)을 구분한다.
+    # 실패를 warn 으로 삼키면 ledger 가 success 로 오판해 측정 루프 죽음이
+    # 몇 주씩 조용히 지나간다 (실측 2026-07: 401 회귀 17일 미감지).
     raw = fetch_daily_stats(yesterday, yesterday)
+    if raw is None:
+        _save_ali_partial()
+        log("[ROI] 쿠팡 stats 조회 실패 (자격/서명/HTTP) — 쿠팡 ROI 미갱신. "
+            "python -m tools.coupang_source_roi 로 확인", "error")
+        return
     if not raw:
-        log("[ROI] 쿠팡 stats 응답 없음 — 자격/API 미적용 가능. 종료", "warn")
+        _save_ali_partial()
+        log("[ROI] 어제 쿠팡 클릭/주문 활동 0건 — 쿠팡 ROI 갱신 없음", "info")
         return
 
     rows = [_row_to_normalized(r) for r in raw]
     matched_any = any(r["clicks"] or r["orders"] or r["commission"] for r in rows)
     if not matched_any:
-        log("[ROI] 정규화 결과 모두 0 — 응답 스키마 불일치 가능. raw 샘플:", "warn")
+        _save_ali_partial()
+        log("[ROI] 정규화 결과 모두 0 — 응답 스키마 불일치 가능. raw 샘플:", "error")
         for r in raw[:3]:
             log(f"  {json.dumps(r, ensure_ascii=False)}", "info")
         return

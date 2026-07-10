@@ -34,6 +34,7 @@ import os
 import pkgutil
 import subprocess
 import sys
+import threading
 import traceback
 import schedule
 import time
@@ -61,6 +62,13 @@ class ScheduleMeta(TypedDict, total=False):
     env: str
     func: str
     args_from_env: Sequence[str]
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 
 def _resolve_arg(spec: str) -> str | int | float:
@@ -176,12 +184,6 @@ def _safe_subprocess_call(module_name: str, _attempt: int = 0) -> None:
     최대 SCHEDULE_TRANSIENT_RETRIES 회. 재시도는 메인 루프를 sleep 으로 막지
     않는다(블로킹 시 heartbeat 정지 → watchdog 가 스케줄러를 재기동시키므로).
     """
-    def _int_env(name: str, default: int) -> int:
-        try:
-            return int(os.getenv(name, str(default)))
-        except ValueError:
-            return default
-
     timeout = _int_env("SCHEDULE_SUBPROCESS_TIMEOUT", 1800)
     max_retries = _int_env("SCHEDULE_TRANSIENT_RETRIES", 2)
     backoff_min = max(1, _int_env("SCHEDULE_TRANSIENT_BACKOFF_MIN", 5))
@@ -292,6 +294,64 @@ def _register_module(times_env: str, module_name: str) -> int:
             log(f"스케줄 등록: {module_name} @ {t} (subprocess)", "ok")
             count += 1
     return count
+
+
+def _schedule_catchup() -> int:
+    """기동(재기동 포함) 시 오늘 이미 지난 슬롯 중 미실행분을 보충 예약.
+
+    PC 가 꺼져 있었거나 watchdog 재기동이 있으면 `schedule` 라이브러리는
+    '오늘 이미 지난 시각' 작업을 다음날로 밀어버려 색인/백링크/keepalive 류
+    슬롯이 만성 누락된다 (실측 2026-07: indexing_pipeline/backlink_to_sns
+    1주+ 실행 0회 → 신규 글 전부 네이버 미색인). ledger 의 '오늘 시도했음'
+    (성공/실패 불문) 으로 판정하므로 같은 날 재기동에도 이중 보충되지 않는다.
+
+    - 모듈당 1회만 보충: 발행 파이프라인은 키워드 풀을 소모하고, 수 분 간격
+      동일 포맷 연속 발행은 중복 콘텐츠 신호라 다중 슬롯 누락도 1회로 접는다.
+    - inline 실행 금지: 기동 직후 대량 보충이 메인 루프를 막으면 heartbeat
+      정지 → watchdog 재기동 루프. transient retry 와 같은 일회성 schedule
+      예약으로 N분 간격 분산한다.
+    - 모듈별 opt-out: SCHEDULE dict 에 "catchup": False.
+    """
+    from datetime import datetime, timedelta
+    from common.run_ledger import list_today
+    from pipelines.daily_summary import _enumerate_today_slots
+
+    if os.getenv("SCHEDULER_CATCHUP", "true").strip().lower() not in ("1", "true", "yes"):
+        return 0
+
+    grace_min   = _int_env("SCHEDULER_CATCHUP_GRACE_MIN", 10)
+    spacing_min = max(1, _int_env("SCHEDULER_CATCHUP_SPACING_MIN", 3))
+    max_n       = _int_env("SCHEDULER_CATCHUP_MAX", 8)
+
+    now = datetime.now()
+    ran_today = {r.get("module") for r in list_today()}
+    missed: list[str] = []
+    for slot in sorted(_enumerate_today_slots(), key=lambda s: s["scheduled"]):
+        if slot["scheduled"] > now - timedelta(minutes=grace_min):
+            continue  # 미도래이거나 방금 지난 슬롯 — 정규 등록 경로가 처리
+        module = slot["module"]
+        if module in ran_today or module in missed:
+            continue
+        mod = sys.modules.get(module)
+        if mod is not None and getattr(mod, "SCHEDULE", {}).get("catchup", True) is False:
+            continue
+        missed.append(module)
+
+    if len(missed) > max_n:
+        log(f"[catch-up] 누락 {len(missed)}개 중 상한 {max_n}개만 보충 — "
+            f"제외: {', '.join(missed[max_n:])}", "warn")
+        missed = missed[:max_n]
+
+    for i, module in enumerate(missed):
+        delay = spacing_min * (i + 1)
+
+        def _catchup_job(_m=module):
+            _safe_subprocess_call(_m)
+            return schedule.CancelJob  # 일회성 — 실행 후 자기 제거
+
+        schedule.every(delay).minutes.do(_catchup_job)
+        log(f"[catch-up] {module} — {delay}분 후 보충 실행 예약", "warn")
+    return len(missed)
 
 
 def _discover_schedules():
@@ -429,6 +489,25 @@ def _kill_other_scheduler_instances() -> int:
     return len(actually_killed)
 
 
+def _heartbeat_loop(registered: int, started_at: str) -> None:
+    """heartbeat 전용 데몬 스레드 본체.
+
+    메인 루프는 _safe_subprocess_call 의 proc.communicate() 동안 최대
+    SCHEDULE_SUBPROCESS_TIMEOUT(30분) 블로킹된다. heartbeat 를 메인 루프에서
+    쓰면 그 사이 5분+ stale 이 되어 watchdog 이 '정상 실행 중'인 스케줄러를
+    재기동한다 — 재기동은 지난 시각 슬롯을 다음날로 밀고(catch-up 의 존재
+    이유), singleton 가드의 taskkill 이 /T 없이 스케줄러만 죽여 실행 중이던
+    파이프라인이 orphan 으로 남는 중복 발행 경로도 연다. 전용 스레드는 이를
+    차단하고, watchdog 의 감시 의미는 '루프 정지'→'프로세스 사망'으로 바뀐다
+    (프로세스 사망은 Task Scheduler 재시작 정책이 여전히 커버).
+    """
+    from common.heartbeat import write as _hb_write
+    main_t = threading.main_thread()
+    while main_t.is_alive():
+        _hb_write(os.getpid(), registered, started_at)
+        time.sleep(30)
+
+
 def _alert_downtime_gap() -> None:
     """기동 시 직전 실행 이후 공백이 크면(=PC/스케줄러 장기 미가동) 텔레그램 경고.
 
@@ -512,16 +591,23 @@ def main() -> None:
 
     log(f"총 {registered}개 스케줄 등록 완료. 실행 대기 중... (Ctrl+C로 종료)", "step")
 
+    # 오늘 지난 슬롯 중 미실행분 보충 — 등록 완료 후, 루프 진입 전
+    caught_up = _schedule_catchup()
+    if caught_up:
+        log(f"[catch-up] 총 {caught_up}개 슬롯 보충 예약 완료", "step")
+
     from common.notifier import notify_scheduler_start
     notify_scheduler_start(registered)
 
-    from common.heartbeat import write as _hb_write, clear as _hb_clear
+    from common.heartbeat import clear as _hb_clear
     from datetime import datetime
     started_at = datetime.now().isoformat(timespec="seconds")
 
+    threading.Thread(target=_heartbeat_loop, args=(registered, started_at),
+                     daemon=True, name="heartbeat").start()
+
     try:
         while True:
-            _hb_write(os.getpid(), registered, started_at)
             schedule.run_pending()
             time.sleep(30)
     except KeyboardInterrupt:

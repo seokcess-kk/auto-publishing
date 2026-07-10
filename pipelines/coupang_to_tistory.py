@@ -44,9 +44,20 @@ def _build_content(keyword: str, products: list) -> tuple:
         return "", "", "", ""
     intro_text   = generate_product_intro(keyword, products)
     pick_reasons = generate_product_pick_reasons(keyword, products)
+    related = _recent_tistory_links()
     return render_product_post(keyword, products, COUPANG_THEME,
                                 intro_text=intro_text,
-                                pick_reasons=pick_reasons)
+                                pick_reasons=pick_reasons,
+                                related_links=related)
+
+
+def _recent_tistory_links() -> list:
+    """내부링크 블록용 최근 티스토리 글 — 실패해도 발행은 계속."""
+    try:
+        from common.publish_queue import get_recent_by_platform
+        return get_recent_by_platform("tistory", 3)
+    except Exception:
+        return []
 
 
 def _close_pub(pub) -> None:
@@ -132,12 +143,19 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
             )
             tags = [theme, "쿠팡파트너스"] + ai_tags + ["추천상품"]
 
+            # keyword/source/affiliate_url: bridge 모드에선 발행 완료가 /done
+            # 핸들러에서 나므로 publish_queue 귀속 meta 를 큐 아이템에 실어 보낸다
+            # (아래 _add_url 은 web 모드 전용 — bridge 는 result.url 이 빈 값).
             result = pub.post(
                 title=title,
                 content=content,
                 tags=tags,
                 image_url=image_url,
                 category=os.getenv("TISTORY_CATEGORY", ""),
+                keyword=theme,
+                source="coupang",
+                affiliate_url=(products[0].get("affiliate_url", "") or
+                               products[0].get("url", "")),
             )
             if result.success:
                 published += 1

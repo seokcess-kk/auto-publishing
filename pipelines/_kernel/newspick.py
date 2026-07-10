@@ -301,12 +301,16 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             except Exception as e:
                 log(f"[뉴스픽] 연관검색어 태그 예외: {e}", "warn")
 
+            # source/affiliate_url: bridge 모드 publish_queue 귀속 meta —
+            # /done 핸들러가 큐 아이템에서 넘겨받아 기록 (web/threads 는 **kwargs 무해)
             result = publisher.post(
                 title=display_title,
                 content=content,
                 tags=tags,
                 image_url=article.get("image", ""),
                 category=post_category,
+                source="newspick",
+                affiliate_url=(product or {}).get("affiliate_url", ""),
             )
             if result.success:
                 published += 1

@@ -53,6 +53,13 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "python tools/aliexpress_manual_login.py → 'Continue with Google' 로 로그인",
     ),
     (
+        # 쿠팡 OpenAPI 자격 회귀 — data.go.kr 401 패턴과 구분되도록 쿠팡 문구로 한정.
+        re.compile(r"Invalid\s*signature|쿠팡\s*stats\s*조회\s*실패|"
+                   r"SECRET_KEY\s*길이\s*이상|쿠팡\s*\w*\s*리포트\s*실패:\s*40[13]", re.I),
+        "쿠팡 OpenAPI 서명 거부 (키 재발급/재복사 필요)",
+        ".env COUPANG_ACCESS_KEY/SECRET_KEY 교체 후 python -m tools.coupang_source_roi 로 확인",
+    ),
+    (
         re.compile(r"/auth/login|Kakao\s*로그인\s*실패|Kakao\s*페이지\s*전환\s*실패", re.I),
         "Kakao(티스토리) 세션 만료",
         "python -m tools.verify_tistory_login <blog>",

@@ -370,6 +370,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             )
         except Exception as e:
             log(f"[bridge] publish_queue 갱신 실패 (무시): {e}", "warn")
+            return
+        # 발행 확정 즉시 색인 제출 (fire-and-forget) — 야간 indexing_pipeline
+        # 누락에도 신규 글이 당일 검색에 노출되도록.
+        try:
+            from common.instant_indexing import submit_async
+            submit_async(url)
+        except Exception as e:
+            log(f"[bridge] 즉시색인 큐잉 실패 (무시): {e}", "warn")
 
 
 def _stale_reset_loop() -> None:

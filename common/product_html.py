@@ -4,6 +4,9 @@
 쿠팡/알리 등 상품형 파이프라인이 공유하는 카드 템플릿.
 차이는 ProductTheme 데이터클래스로 주입.
 """
+import html as _html
+import json
+import os
 import random
 from dataclasses import dataclass, field
 from typing import List
@@ -120,15 +123,19 @@ def _build_card(idx: int, product: dict, theme: ProductTheme) -> str:
         f'font-weight:700;border-radius:6px;">최저가 보기 ▶</span>'
     )
 
+    # <img alt> + <h3>: CSS background/일반 div 는 이미지 색인·문서 구조 신호가
+    # 전혀 없다. flex 카드 레이아웃은 그대로 유지 (a 내부 h3 는 HTML5 유효).
+    alt = _html.escape(name[:60], quote=True)
     return (
         f'<a href="{aff_url}" target="_blank" rel="nofollow sponsored noopener" '
         f'style="text-decoration:none;color:inherit;display:block;margin:0 auto 14px auto;max-width:680px;">'
         f'<div style="display:flex;border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;background:#fff;'
         f'box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
-        f'<div style="flex:0 0 120px;min-height:120px;background:url(\'{img}\') center/contain no-repeat #f9f9f9;"></div>'
+        f'<img src="{img}" alt="{alt}" loading="lazy" '
+        f'style="flex:0 0 120px;width:120px;min-height:120px;object-fit:contain;background:#f9f9f9;">'
         f'<div style="flex:1;padding:12px 14px;display:flex;flex-direction:column;justify-content:center;">'
-        f'<div style="font-size:13px;font-weight:600;line-height:1.4;color:#333;margin-bottom:6px;">'
-        f'{idx+1}. {name}</div>'
+        f'<h3 style="font-size:13px;font-weight:600;line-height:1.4;color:#333;margin:0 0 6px;">'
+        f'{idx+1}. {name}</h3>'
         f'{arrival_html}'
         f'<div style="margin-bottom:4px;">{price_html}</div>'
         f'<div style="font-size:11px;color:#888;">{meta_html}</div>'
@@ -245,10 +252,64 @@ def _build_pick_reason_html(text: str) -> str:
     )
 
 
+def _build_related_html(related_links: list) -> str:
+    """'함께 보면 좋은 글' 내부링크 블록 — 소유 도메인 내 링크 순환으로 체류시간과
+    크롤 경로를 만든다. publish_queue.get_recent_by_platform() 결과를 그대로 받는다."""
+    if not related_links:
+        return ""
+    items = "".join(
+        f'<li style="margin:5px 0;"><a href="{r["url"]}" '
+        f'style="color:#3366cc;font-size:14px;">{_html.escape(r["title"])}</a></li>'
+        for r in related_links if r.get("url") and r.get("title")
+    )
+    if not items:
+        return ""
+    return (
+        f'<div style="margin:22px auto 0;max-width:680px;padding:14px 18px;'
+        f'background:#f8f9fa;border-radius:10px;">'
+        f'<h2 style="font-size:15px;margin:0 0 8px;color:#333;">함께 보면 좋은 글</h2>'
+        f'<ul style="margin:0;padding-left:18px;">{items}</ul></div>'
+    )
+
+
+def _build_itemlist_jsonld(keyword: str, products: list) -> str:
+    """ItemList JSON-LD — PRODUCT_JSONLD=true 일 때만 본문에 삽입.
+
+    Tistory 에디터(TinyMCE setContent)가 <script> 를 스트립할 가능성이 있어
+    기본 off. 실발행 1건으로 잔존 확인 후 .env 에서 켠다.
+    """
+    if os.getenv("PRODUCT_JSONLD", "false").strip().lower() not in ("1", "true", "yes"):
+        return ""
+    items = []
+    for i, p in enumerate(products):
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        item = {"@type": "ListItem", "position": i + 1, "name": name}
+        if p.get("image"):
+            item["image"] = p["image"]
+        items.append(item)
+    if not items:
+        return ""
+    data = {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": f"{keyword} 추천 TOP{len(items)}",
+        "itemListElement": items,
+    }
+    return ('<script type="application/ld+json">'
+            + json.dumps(data, ensure_ascii=False) + "</script>")
+
+
 def render_product_post(keyword: str, products: list, theme: ProductTheme,
                         intro_text: str = "",
-                        pick_reasons: list = None) -> tuple:
-    """(title, content_html, excerpt, slug) 반환. content 는 wp:html 블록으로 감쌈."""
+                        pick_reasons: list = None,
+                        related_links: list = None) -> tuple:
+    """(title, content_html, excerpt, slug) 반환. content 는 wp:html 블록으로 감쌈.
+
+    related_links: publish_queue 최근 글 [{url,title},...] — 있을 때만 내부링크
+    블록 렌더 (WP 커널 등 기존 호출처는 None 그대로 → 비회귀).
+    """
     if not products:
         return "", "", "", ""
 
@@ -275,6 +336,14 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
 
     top_cta_html = _build_top_cta_html(products[0], theme)
 
+    # h2 섹션 헤딩 — 키워드가 든 문서 구조 신호 (기존 리드 문구는 스타일 유지)
+    section_h2 = (
+        f'<h2 style="font-size:18px;margin:8px 0 14px;color:#222;">'
+        f'{keyword} 추천 순위 TOP{len(products)}</h2>'
+    )
+    related_html = _build_related_html(related_links or [])
+    jsonld_html = _build_itemlist_jsonld(keyword, products)
+
     inner_html = (
         f'<div style="max-width:680px;margin:0 auto;padding:20px 16px;'
         f'font-family:-apple-system,\'Noto Sans KR\',sans-serif;">'
@@ -285,9 +354,12 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
         f'을 추천합니다</div>'
         f'{top_cta_html}'
         f'{intro_html}'
+        f'{section_h2}'
         f'{cards_html}'
+        f'{related_html}'
         f'<div style="text-align:center;padding:16px 0 8px;font-size:11px;color:#bbb;">'
         f'{theme.footer_note}</div>'
+        f'{jsonld_html}'
         f'</div>'
     )
     content = f'<!-- wp:html -->{inner_html}<!-- /wp:html -->'

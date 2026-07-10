@@ -206,12 +206,15 @@ def run(count: int = 1, feeds: list = None) -> None:
 
             content = body + render_product_card(product)
 
+            # bridge 모드 publish_queue 귀속 meta (/done 핸들러가 기록)
             result = pub.post(
                 title=title,
                 content=content,
                 tags=tags,
                 image_url=item.get("image", ""),
                 category=os.getenv("TISTORY_CATEGORY", ""),
+                source="policy",
+                affiliate_url=(product or {}).get("affiliate_url", ""),
             )
             if result.success:
                 published += 1
@@ -221,7 +224,9 @@ def run(count: int = 1, feeds: list = None) -> None:
                 if result.url:
                     last_url = result.url
                     from common.publish_queue import add_url as _add_url
-                    _add_url(result.url, platform="tistory", title=title)
+                    _add_url(result.url, platform="tistory", title=title,
+                             source="policy",
+                             affiliate_url=(product or {}).get("affiliate_url", ""))
             else:
                 log(f"발행 실패: {result.message}", "error")
 

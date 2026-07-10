@@ -1,9 +1,11 @@
 """
 스케줄러 헬스체크용 heartbeat 파일.
 
-scheduler_runner 가 매 루프(30초)마다 `.runtime/scheduler_heartbeat` 의
-mtime 을 갱신한다. 별도 워치독 (`tools/watchdog.py`) 이 이 파일의 mtime 을
-검사해 5분 이상 stale 이면 텔레그램 알림 + 재기동을 트리거한다.
+scheduler_runner 의 전용 heartbeat 데몬 스레드가 30초마다
+`.runtime/scheduler_heartbeat` 의 mtime 을 갱신한다 (메인 루프는 subprocess
+실행 동안 최대 30분 블로킹되므로 루프에서 쓰면 거짓 stale 이 난다).
+별도 워치독 (`tools/watchdog.py`) 이 이 파일의 mtime 을 검사해 5분 이상
+stale 이면 텔레그램 알림 + 재기동을 트리거한다.
 
 heartbeat 는 단일 라인 JSON 으로 부가 정보 보유:
     {"pid": 12345, "registered": 20, "started_at": "2026-05-11T15:48:00"}

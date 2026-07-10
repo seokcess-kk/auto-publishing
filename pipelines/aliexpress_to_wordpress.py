@@ -37,15 +37,21 @@ SCHEDULE = {
 
 # ─── HTML 콘텐츠 빌드 (타 파이프라인 재사용용) ───────────────────────────────
 
-def build_content(keyword: str, products: list) -> tuple:
-    """알리 (title, content, excerpt, slug). 공통 템플릿 엔진 사용."""
+def build_content(keyword: str, products: list,
+                  related_links: list = None) -> tuple:
+    """알리 (title, content, excerpt, slug). 공통 템플릿 엔진 사용.
+
+    related_links: 내부링크 블록 [{url,title},...] — tistory 파이프라인만 전달
+    (WP 는 None 그대로 → 비회귀).
+    """
     if not products:
         return "", "", "", ""
     intro_text   = generate_intro(keyword, products)
     pick_reasons = generate_product_pick_reasons(keyword, products)
     return render_product_post(keyword, products, ALIEXPRESS_THEME,
                                 intro_text=intro_text,
-                                pick_reasons=pick_reasons)
+                                pick_reasons=pick_reasons,
+                                related_links=related_links)
 
 
 # ─── 파이프라인 Config ──────────────────────────────────────────────────────
