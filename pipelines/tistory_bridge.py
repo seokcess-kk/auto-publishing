@@ -100,6 +100,9 @@ def _notify_publish_fail(item_id: str, error: str) -> None:
                     "열어두면 자동 복구됩니다.")
         elif "captcha" in low or "캡차" in err or "navigation timeout" in low:
             hint = "\n💡 캡차 응답 누락 가능 — 텔레그램 캡차 답글을 확인하세요."
+        elif "검증 실패" in err or "오귀속" in err or "제목 불일치" in err:
+            hint = ("\n💡 임시저장 글이 에디터를 덮어썼거나 다른 글이 발행됐을 수 "
+                    "있습니다 — 티스토리 글쓰기 화면의 임시저장 목록을 비워주세요.")
         msg = (
             f"⚠️ <b>[Tistory 발행 실패]</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"

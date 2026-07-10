@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Auto Publishing — Tistory Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "로컬 bridge (localhost:5757) 에서 글을 받아 Tistory editor 에 자동 작성. 사용자는 DKAPTCHA 풀이만 담당.",
   "permissions": [
     "storage",
@@ -25,7 +25,7 @@
       "matches": ["https://*.tistory.com/manage/newpost*"],
       "js": ["main_world.js"],
       "world": "MAIN",
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": ["https://*.tistory.com/manage/newpost*"],

@@ -180,6 +180,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           message: `${(active.title || "").slice(0, 60)}\n${msg.error || ""}`.trim(),
         }); } catch (e) {}
       }
+      // 발행 클릭 전 실패한 탭은 방치하면 잘못된 편집 상태를 수동 발행할 수
+      // 있으므로 닫는다 (content.js 가 closeTab 으로 단계 구분).
+      if (msg.closeTab && sender.tab?.id != null) {
+        try { await chrome.tabs.remove(sender.tab.id); } catch (e) {}
+      }
       sendResponse({ ok: true });
       return;
     }
@@ -336,9 +341,53 @@ async function markPublishDone(item, url, postId) {
   } catch (e) {}
 }
 
-// Tistory 발행 직후 글 목록 (/manage/posts) 로 보내고 실제 글 URL 로는 안 가는
-// 경우 — admin API 로 최신 글 ID 를 직접 조회.
-async function fetchLatestPostUrl(blogName) {
+async function markPublishFail(item, error) {
+  await reportFail(item.id, error);
+  await setActiveItem(null);
+  await chrome.storage.local.remove("active_tab_id");
+  try {
+    chrome.notifications.create("", {
+      type: "basic",
+      iconUrl: "icon.png",
+      title: "✗ 발행 실패",
+      message: `${(item.title || "").slice(0, 60)}\n${error}`.trim(),
+    });
+  } catch (e) {}
+}
+
+// ─── 발행 귀속 검증 ──────────────────────────────────────────────────────────
+// 탭이 글 URL 로 이동했다는 것만으로 "우리 글이 발행됐다"고 볼 수 없다 —
+// 임시저장 draft 가 복원·발행되면 엉뚱한 글(post 166)이 done 으로 오귀속된다.
+// 글 목록의 제목을 아이템 제목과 대조해서만 성공 처리한다.
+
+// posts.json 이 HTML entity / 공백 차이를 섞어 반환할 수 있어 느슨 비교.
+function normalizeTitle(s) {
+  return String(s || "")
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ").trim();
+}
+
+function titlesMatch(a, b) {
+  const na = normalizeTitle(a), nb = normalizeTitle(b);
+  if (na === nb) return true;
+  // 표기 차이(entity/특수문자) 흡수 — 한글/영숫자만 남겨 비교
+  const strip = (s) => s.replace(/[^0-9a-zA-Z가-힣]/g, "");
+  const sa = strip(na), sb = strip(nb);
+  return sa.length > 0 && sa === sb;
+}
+
+function pickTitle(it) {
+  return it.title ?? it.postTitle ?? it.subject ?? null;
+}
+
+function pickId(it) {
+  const id = it.id ?? it.postId ?? it.entryId;
+  return id != null ? String(id) : null;
+}
+
+// admin API 로 최근 글 목록 조회. Tistory 응답 스키마가 가변적 — 여러 키 후보.
+async function fetchPostList(blogName) {
   const candidates = [
     `https://${blogName}.tistory.com/manage/posts.json?page=1&size=5`,
     `https://${blogName}.tistory.com/manage/posts.json?page=1`,
@@ -349,17 +398,11 @@ async function fetchLatestPostUrl(blogName) {
       const r = await fetch(apiUrl, { credentials: "include" });
       if (!r.ok) continue;
       const d = await r.json();
-      // Tistory 응답 스키마가 가변적 — 여러 키 후보
       const items =
         d.items || d.posts || d.entries ||
         (d.data && (d.data.items || d.data.posts || d.data.entries)) ||
         [];
-      for (const it of items) {
-        const id = it.id || it.postId || it.entryId;
-        if (id) {
-          return { url: `https://${blogName}.tistory.com/${id}`, postId: String(id) };
-        }
-      }
+      if (items.length) return items;
     } catch (e) {
       // 다음 후보로
     }
@@ -379,26 +422,61 @@ async function onTabNavigated(details) {
   const re = new RegExp(`https?://${blogHost.replace(/\./g, "\\.")}/(\\d+)(?:/|$|\\?|#)`);
   const m = u.match(re);
 
-  // (A) 가장 정확한 케이스 — 글 ID URL 로 직접 이동
+  // (A) 글 ID URL 로 직접 이동 — 목록에서 해당 ID 의 제목을 대조
   if (m && !u.includes("/manage")) {
     console.log("[bridge] webNavigation 발행 감지 (post URL):", u);
+    const posts = await fetchPostList(item.blog_name);
+    const entry = posts?.find((p) => pickId(p) === m[1]);
+    const entryTitle = entry ? pickTitle(entry) : null;
+    if (entryTitle != null && !titlesMatch(entryTitle, item.title)) {
+      console.warn("[bridge] 발행 글 제목 불일치 — 오귀속 방지 실패 처리:", entryTitle);
+      await markPublishFail(item, `발행 감지 글(${m[1]}) 제목 불일치 — 오귀속 방지 실패 처리`);
+      return;
+    }
+    // 목록 미조회/ID 미발견이면 제목 검증 불가 — 종전대로 성공 처리
     await markPublishDone(item, u, m[1]);
     return;
   }
 
-  // (B) /manage/posts 도달 — 실제 글 URL 을 admin API 로 회수
+  // (B) /manage/posts 도달 — 글 목록에서 '제목이 일치하는' 글을 찾아 귀속
   if (u.includes("/manage/posts") && !u.includes("/newpost")) {
     console.log("[bridge] /manage/posts 도달 — admin API 로 글 URL 조회 시도");
+    const findMatch = (list) => (list || [])
+      .find((p) => pickTitle(p) != null && titlesMatch(pickTitle(p), item.title));
     // 2초 대기: 목록 인덱싱 반영 시간
     await new Promise((r) => setTimeout(r, 2000));
-    const latest = await fetchLatestPostUrl(item.blog_name);
-    if (latest) {
-      console.log("[bridge] 최신 글 URL 회수:", latest.url);
-      await markPublishDone(item, latest.url, latest.postId);
-    } else {
-      console.log("[bridge] 글 URL 회수 실패 — /manage/posts URL 로 fallback");
-      await markPublishDone(item, u, "");
+    let posts = await fetchPostList(item.blog_name);
+    let match = findMatch(posts);
+    if (!match && posts && posts.some((p) => pickTitle(p) != null)) {
+      // 새 글이 아직 목록에 인덱싱 안 됐을 수 있음 — 한 번 더 조회 후 판정
+      await new Promise((r) => setTimeout(r, 3000));
+      posts = (await fetchPostList(item.blog_name)) || posts;
+      match = findMatch(posts);
     }
+    if (posts && posts.length) {
+      if (match && pickId(match)) {
+        const id = pickId(match);
+        const url = `https://${item.blog_name}.tistory.com/${id}`;
+        console.log("[bridge] 제목 일치 글 URL 회수:", url);
+        await markPublishDone(item, url, id);
+        return;
+      }
+      if (posts.some((p) => pickTitle(p) != null)) {
+        // 목록에 제목들이 있는데 우리 글이 없음 → 다른 글이 발행됐거나 발행
+        // 자체가 안 된 것 — done 오귀속(post 166 사고) 대신 실패 처리.
+        console.warn("[bridge] 글 목록에 아이템 제목 없음 — 실패 처리");
+        await markPublishFail(item, "발행 후 글 목록에 해당 제목 없음 — 오귀속 방지 실패 처리");
+        return;
+      }
+      // 스키마에서 제목을 못 읽는 경우 — 종전 동작 (최신 글 = 발행 글)
+      const id = pickId(posts[0]);
+      if (id) {
+        await markPublishDone(item, `https://${item.blog_name}.tistory.com/${id}`, id);
+        return;
+      }
+    }
+    console.log("[bridge] 글 URL 회수 실패 — /manage/posts URL 로 fallback");
+    await markPublishDone(item, u, "");
     return;
   }
 }

@@ -9,6 +9,27 @@
 (function () {
   console.log("[ap-mw] main_world.js loaded @", location.href);
 
+  // ─── 임시저장 이어쓰기 confirm 자동 거절 ─────────────────────────────────
+  // 임시저장 글이 남아 있으면 에디터가 로드 중 native confirm("저장된 글이
+  // 있습니다. 이어서 작성하시겠습니까?") 을 띄운다. native confirm 은 renderer
+  // 전체를 멈추므로 자동화 플로우가 무기한 hang 하고, 사용자가 '확인'을 누르면
+  // 이전 글 draft 가 제목/본문을 덮어써 중복 제목·뒤섞인 본문으로 발행된다
+  // (post 166, 172 사고). document_start 에 페이지 스크립트보다 먼저 confirm
+  // 을 선점해 자동화 탭(_apid)에서만 새 글로 시작하도록 거절한다.
+  if (new URLSearchParams(location.search).has("_apid")) {
+    const origConfirm = window.confirm.bind(window);
+    window.confirm = function (msg) {
+      const m = String(msg ?? "");
+      if (/이어서|임시\s*저장|저장된\s*글|작성\s*중인\s*글/.test(m)) {
+        console.warn("[ap-mw] 이어쓰기 confirm 자동 거절 (새 글로 시작):", m);
+        window.__apDraftConfirmDeclined = m;
+        return false;
+      }
+      console.warn("[ap-mw] 예상외 confirm — 원본으로 통과:", m);
+      return origConfirm(m);
+    };
+  }
+
   window.addEventListener("message", async (ev) => {
     if (ev.source !== window) return;
     const data = ev.data;
@@ -27,7 +48,12 @@
 
   async function handle(cmd, payload) {
     if (cmd === "ping") {
-      return { ok: true, tinymce: !!window.tinymce, hasActive: !!(window.tinymce && window.tinymce.activeEditor) };
+      return {
+        ok: true,
+        tinymce: !!window.tinymce,
+        hasActive: !!(window.tinymce && window.tinymce.activeEditor),
+        draftConfirmDeclined: window.__apDraftConfirmDeclined || null,
+      };
     }
     if (cmd === "wait-tinymce") {
       const timeoutMs = payload.timeoutMs || 30000;

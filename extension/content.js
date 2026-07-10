@@ -79,6 +79,31 @@
     throw new Error(`waitFor timeout: ${selector}`);
   }
 
+  // ─── 임시저장 이어쓰기 모달 (커스텀 DOM 변형) 자동 거절 ──────────────────
+  // native confirm 은 main_world.js 가 document_start 에 선점 거절한다.
+  // 에디터가 커스텀 레이어로 띄우는 변형에 대비해 DOM 도 몇 초간 감시.
+  async function dismissDraftModalIfPresent(maxWaitMs = 4000) {
+    const deadline = Date.now() + maxWaitMs;
+    while (Date.now() < deadline) {
+      const layers = [...document.querySelectorAll(
+        '[class*="layer"], [class*="modal"], [class*="dialog"], [role="dialog"]')]
+        .filter((el) => el.offsetParent !== null &&
+          /이어서\s*작성|저장된\s*글|임시\s*저장/.test(el.innerText || ""));
+      for (const layer of layers) {
+        const cancelBtn = [...layer.querySelectorAll('button, a[role="button"]')]
+          .find((b) => b.offsetParent !== null && /취소|새\s*글/.test((b.innerText || "").trim()));
+        if (cancelBtn) {
+          cancelBtn.click();
+          console.warn("[ap] 이어쓰기 모달 감지 — '취소' 클릭 (새 글로 시작)");
+          await new Promise((r) => setTimeout(r, 500));
+          return true;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return false;
+  }
+
   // ─── DKAPTCHA 자동 처리 (텔레그램 relay) ─────────────────────────────────
   async function handleCaptchaIfPresent(itemId) {
     // 공개 발행 클릭 후 위젯 등장까지 최대 8초 대기
@@ -269,6 +294,7 @@
     console.error("[ap] DOM dump:\n" + JSON.stringify(out, null, 2));
   }
 
+  let publishClicked = false;
   try {
     // 0) main world ping 으로 통신 확인
     const pong = await mw("ping");
@@ -281,6 +307,9 @@
       throw new Error("tinymce 초기화 실패: " + (wait?.error || "?"));
     }
     console.log("[ap] ✓ tinymce 준비됨 editor=" + wait.editorId);
+
+    // 1.5) 이어쓰기 모달(커스텀 변형) 자동 거절 — native confirm 은 main_world 담당
+    await dismissDraftModalIfPresent();
 
     // 2) 제목 (isolated world DOM 으로 가능)
     const titleEl = await waitFor("textarea#post-title-inp");
@@ -312,6 +341,21 @@
       }
     }
 
+    // 4.5) 발행 전 최종 검증 — 이어쓰기 draft 복원 등이 입력값을 덮어썼으면
+    //      잘못된 글(중복 제목/남의 본문)을 발행하지 않도록 여기서 중단한다.
+    const titleNow = (document.querySelector("textarea#post-title-inp")?.value || "").trim();
+    if (titleNow !== (item.title || "").trim()) {
+      throw new Error(`발행 전 검증 실패 — 에디터 제목 불일치: '${titleNow.slice(0, 40)}'`);
+    }
+    const cur = await mw("get-content");
+    const curLen = (cur?.ok ? cur.html || "" : "").length;
+    const wantLen = (item.content || "").length;
+    // tinymce 가 HTML 을 정규화하므로 문자열 일치 비교 불가 — 길이 비율로 검증
+    if (curLen < wantLen * 0.5) {
+      throw new Error(`발행 전 검증 실패 — 본문 길이 이상 (editor=${curLen}, item=${wantLen})`);
+    }
+    console.log("[ap] ✓ 발행 전 검증 통과 (제목 일치, 본문 " + curLen + "자)");
+
     // 5) 완료 클릭
     const completeBtn = await waitFor("#publish-layer-btn");
     completeBtn.click();
@@ -339,13 +383,16 @@
       throw new Error("발행 버튼 미발견: #" + publishBtnId);
     }
     publishBtn.click();
+    publishClicked = true;
     console.log("[ap] ✓ '" + (v === 0 ? "비공개 저장" : "공개 발행") + "' 클릭");
 
     // 7.5) DKAPTCHA 자동 처리 — 텔레그램 캡차 relay
     // 클릭 후 위젯 등장 대기 → 탭 캡처 → 텔레그램 → 본인 답글 → 자동 입력
     await handleCaptchaIfPresent(item.id);
 
-    // 8) URL 이 글 ID 로 이동하면 발행 성공
+    // 8) URL 이 글 ID / 글 목록으로 이동하면 발행 완료 — done 보고는 하지 않는다.
+    //    성공 귀속은 background 의 webNavigation 핸들러가 글 목록 제목 대조 후
+    //    단독 수행 (여기서 직접 publish-done 을 보내면 검증을 우회하게 됨).
     const blogHost = location.host;
     const startWait = Date.now();
     const WAIT_MAX = 5 * 60_000;
@@ -353,13 +400,11 @@
       const u = location.href;
       const m = u.match(new RegExp(`https?://${blogHost.replace(/\./g, "\\.")}/(\\d+)`));
       if (m && !u.includes("/manage")) {
-        console.log("[ap] ✓✓✓ 발행 성공:", u);
-        chrome.runtime.sendMessage({ type: "publish-done", url: u, post_id: m[1] });
+        console.log("[ap] ✓✓✓ 발행 감지 (post URL) — 귀속 검증은 background 담당:", u);
         return;
       }
       if (u.includes("/manage/posts") && !u.includes("/newpost")) {
-        console.log("[ap] ✓ /manage/posts 도달 — 발행 완료로 간주");
-        chrome.runtime.sendMessage({ type: "publish-done", url: u, post_id: "" });
+        console.log("[ap] ✓ /manage/posts 도달 — 귀속 검증은 background 담당");
         return;
       }
       await new Promise((r) => setTimeout(r, 2000));
@@ -369,7 +414,14 @@
   } catch (e) {
     console.error("[ap] ✗ 실패:", e);
     try {
-      chrome.runtime.sendMessage({ type: "publish-fail", error: e.message || String(e) });
+      // 발행 클릭 전에 실패한 탭은 열어두면 사용자가 잘못된 상태(draft 복원 등)
+      // 그대로 수동 발행할 수 있어 background 가 닫는다. 클릭 후 실패(캡차
+      // 수동 풀이 대기 등)는 수동 완료 여지가 있으므로 유지.
+      chrome.runtime.sendMessage({
+        type: "publish-fail",
+        error: e.message || String(e),
+        closeTab: !publishClicked,
+      });
     } catch (_) {}
   }
 })();
