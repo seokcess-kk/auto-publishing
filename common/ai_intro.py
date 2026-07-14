@@ -94,6 +94,36 @@ def _clean_ai_output(text: str) -> str:
     return text.strip()
 
 
+def _clean_html_body(text: str) -> str:
+    """모델이 출력한 HTML 본문 정제 — 코드펜스/마크다운/script 제거 + <p> 최소 구조.
+
+    generate_newspick_article / generate_product_guide 공용.
+    거부/되묻기 응답이면 빈 문자열 반환.
+    """
+    if not text or _looks_like_refusal(text):
+        return ""
+    body = text.strip()
+    body = re.sub(r"^```[a-zA-Z]*\n?", "", body)
+    body = body.replace("```", "").strip()
+    body = _BOLD_RE.sub(r"\1", body)
+    body = re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", "", body)
+    # <p>/<h2> 가 전혀 없으면 줄단위로 <p> 래핑해 최소 구조 보장
+    if "<p" not in body and "<h2" not in body:
+        paras = [p.strip() for p in body.split("\n") if p.strip()]
+        body = "".join(f"<p>{p}</p>" for p in paras)
+    return body.strip()
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def html_text_len(html: str) -> int:
+    """HTML 에서 태그를 제거한 가시 텍스트 길이 — thin content 게이트용."""
+    if not html:
+        return 0
+    return len(_HTML_TAG_RE.sub("", html).strip())
+
+
 def _resolve_claude_cli() -> str:
     """Claude CLI 경로 결정: 환경변수 → PATH 탐색 → 기본값 'claude'."""
     return os.getenv("CLAUDE_CLI_PATH") or shutil.which("claude") or "claude"
@@ -155,7 +185,9 @@ def _generate_with_claude_api(prompt: str) -> str:
     try:
         msg = client.messages.create(
             model=model,
-            max_tokens=2048,
+            # 구매 가이드/뉴스픽 본문이 한국어 1,000자+ HTML 이라 2048 로는
+            # 꼬리가 잘린다 (한국어 ≈ 1.5 tok/자). 짧은 응답엔 영향 없음.
+            max_tokens=4096,
             system=_COPYWRITER_SYSPROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -941,6 +973,70 @@ def generate_product_pick_reasons(keyword: str, products: list) -> list:
     return lines + [""] * (n - len(lines))
 
 
+def generate_product_guide(keyword: str, products: list) -> str:
+    """상품 키워드 구매 가이드 + FAQ HTML (h2/h3/p) 생성 — 쿠팡/알리 공용.
+
+    카드 목록만으로는 애드센스 '가치가 별로 없는 콘텐츠(thin content)' 판정을
+    받는다. 키워드에 대한 일반적 선택 기준·사용 팁·FAQ 를 900~1,300자로 풀어
+    글의 정보 가치를 만든다. 목적:
+      - 제휴 링크 대비 고유 텍스트 비율 확보 (애드센스 승인 요건)
+      - <h2>/<h3> 헤딩 구조 (SEO + 사용자 가독성)
+      - 특정 상품 스펙 단정 금지 — 일반적 기준만 (허위 정보 방지)
+
+    실패 시 빈 문자열 → 호출 측이 게이트/폴백 처리.
+    """
+    if not keyword:
+        return ""
+    top3 = [p.get("name", "") for p in (products or [])[:3]]
+    top3_part = f" (대표 상품: {', '.join(t for t in top3 if t)})" if any(top3) else ""
+    prompt = (
+        f"키워드 '{keyword}'{top3_part} 에 대한 한국어 쇼핑 정보 글을 HTML 로 "
+        f"작성하세요. 위에 상품 추천 카드가 이미 있으므로, 이 글은 그 아래에 "
+        f"붙는 '구매 가이드 + FAQ' 섹션입니다.\n\n"
+        f"출력 형식 (HTML, 이 구조 그대로):\n"
+        f"<h2>{keyword} 고르는 법 — 구매 전 체크포인트</h2>\n"
+        f"<h3>체크포인트 소제목 1</h3>\n"
+        f"<p>해당 기준 설명 2~3문장 (왜 중요한지 + 확인 방법)</p>\n"
+        f"<h3>체크포인트 소제목 2</h3>\n"
+        f"<p>2~3문장</p>\n"
+        f"<h3>체크포인트 소제목 3</h3>\n"
+        f"<p>2~3문장</p>\n"
+        f"<h2>자주 묻는 질문</h2>\n"
+        f"<h3>Q. 실제 구매자가 궁금해할 질문 1</h3>\n"
+        f"<p>답변 2~3문장</p>\n"
+        f"<h3>Q. 질문 2</h3>\n"
+        f"<p>답변 2~3문장</p>\n"
+        f"<h3>Q. 질문 3</h3>\n"
+        f"<p>답변 2~3문장</p>\n"
+        f"<h2>마무리</h2>\n"
+        f"<p>총평 + 어떤 사람에게 어떤 기준이 맞는지 요약 2~3문장</p>\n\n"
+        f"제약 (반드시 지킬 것):\n"
+        f"- 전체 900~1,300자 (800자 미만 금지)\n"
+        f"- '{keyword}' 를 본문 전체에 4~6회 자연스럽게 반복\n"
+        f"- 특정 상품의 스펙·가격·성능 수치를 지어내지 말 것 — 카테고리 일반의 "
+        f"선택 기준·사용 팁·주의점만 다룰 것\n"
+        f"- 체크포인트는 이 키워드에 실제로 유의미한 기준으로 (재질/용량/호환/"
+        f"세척/배송/AS 등 카테고리에 맞게 선택)\n"
+        f"- 종결은 '~입니다'/'~하세요' 체, 과장·최상급 표현 자제\n"
+        f"- <h2>/<h3>/<p> 태그만 사용 (다른 태그·마크다운·코드블록 금지)\n"
+        f"- 링크·CTA·해시태그 금지\n"
+        f"- 본문 HTML 만 출력 (메타 설명·인사말 금지)"
+    )
+    provider = os.getenv("AI_PROVIDER", "claude").lower()
+    log(f"AI 구매 가이드 생성 ({provider}): {keyword}", "step")
+    if provider == "claude":
+        text = _generate_with_claude(prompt) or _generate_with_gemini(prompt)
+    else:
+        text = _generate_with_gemini(prompt) or _generate_with_claude(prompt)
+    body = _clean_html_body(text)
+    # 지나치게 짧으면 실패로 간주 — 호출 측 thin content 게이트가 처리
+    if html_text_len(body) < 400:
+        if body:
+            log(f"구매 가이드가 너무 짧음 ({html_text_len(body)}자) — 폐기", "warn")
+        return ""
+    return body
+
+
 def generate_newspick_title(raw_title: str, category: str = "") -> str:
     """뉴스픽 기사 원문 제목을 검색·클릭 친화 제목으로 재작성.
 
@@ -1018,14 +1114,17 @@ def generate_newspick_article(raw_title: str, category: str = "") -> str:
         f"범위의 맥락·배경·사람들이 궁금해할 포인트를 풀어 쓰세요.\n\n"
         f"출력 형식 (HTML, 이 구조):\n"
         f"<p>도입 — 이 소식이 왜 화제인지 2~3문장</p>\n"
-        f"<h2>핵심 포인트</h2>\n"
-        f"<p>궁금증을 자아내는 배경·맥락 2~3문장</p>\n"
+        f"<h2>무슨 일인가</h2>\n"
+        f"<p>제목에서 파악되는 사건·상황의 배경과 맥락 3~4문장</p>\n"
         f"<h2>왜 주목받나</h2>\n"
-        f"<p>독자 관점의 의미·반응 2~3문장</p>\n\n"
+        f"<p>독자 관점의 의미·사람들의 반응·비슷한 사례 3~4문장</p>\n"
+        f"<h2>앞으로 지켜볼 점</h2>\n"
+        f"<p>이 이슈에서 앞으로 궁금해질 포인트·전망 2~3문장</p>\n\n"
         f"제약 (반드시 지킬 것):\n"
-        f"- 전체 400~600자\n"
+        f"- 전체 700~1,000자 (600자 미만 금지 — 각 단락을 충분히 풀어 쓸 것)\n"
         f"- 구체적 수치·인용·날짜·실명 발언을 지어내지 말 것. 단정 대신 "
         f"'~로 알려졌다', '~해 화제다', '~라는 반응이 나온다' 같은 표현 사용\n"
+        f"- 같은 문장 구조 반복 금지 — 단락마다 다른 시각(사실/반응/전망)으로\n"
         f"- <p> 와 <h2> 태그만 사용 (다른 태그·마크다운·코드블록 금지)\n"
         f"- 마지막에 링크·CTA·해시태그 넣지 말 것 (호출 측이 별도 추가)\n"
         f"- 본문 HTML 만 출력 (메타 설명·인사말 금지)"
@@ -1039,19 +1138,4 @@ def generate_newspick_article(raw_title: str, category: str = "") -> str:
         text = _generate_with_claude(prompt) or _generate_with_gemini(prompt)
     else:
         text = _generate_with_gemini(prompt) or _generate_with_claude(prompt)
-    if not text or _looks_like_refusal(text):
-        return ""
-
-    import re as _re
-    body = text.strip()
-    # 코드펜스 제거
-    body = _re.sub(r"^```[a-zA-Z]*\n?", "", body)
-    body = body.replace("```", "").strip()
-    body = _BOLD_RE.sub(r"\1", body)
-    # 위험 태그 방어 제거
-    body = _re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", "", body)
-    # <p>/<h2> 가 전혀 없으면 줄단위로 <p> 래핑해 최소 구조 보장
-    if "<p" not in body and "<h2" not in body:
-        paras = [p.strip() for p in body.split("\n") if p.strip()]
-        body = "".join(f"<p>{p}</p>" for p in paras)
-    return body.strip()
+    return _clean_html_body(text)

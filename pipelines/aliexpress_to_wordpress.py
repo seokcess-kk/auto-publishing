@@ -22,6 +22,7 @@ from sources.aliexpress import AliexpressSource
 
 # aliexpress_to_tistory 가 build_content 를 import 하므로 유지
 from common.ai_intro import (
+    generate_product_guide,
     generate_product_intro as generate_intro,
     generate_product_pick_reasons,
 )
@@ -48,10 +49,12 @@ def build_content(keyword: str, products: list,
         return "", "", "", ""
     intro_text   = generate_intro(keyword, products)
     pick_reasons = generate_product_pick_reasons(keyword, products)
+    guide_html   = generate_product_guide(keyword, products)
     return render_product_post(keyword, products, ALIEXPRESS_THEME,
                                 intro_text=intro_text,
                                 pick_reasons=pick_reasons,
-                                related_links=related_links)
+                                related_links=related_links,
+                                guide_html=guide_html)
 
 
 # ─── 파이프라인 Config ──────────────────────────────────────────────────────

@@ -8,8 +8,23 @@ import html as _html
 import json
 import os
 import random
+import re
 from dataclasses import dataclass, field
 from typing import List
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def visible_text_len(html: str) -> int:
+    """렌더된 본문에서 태그 제거 후 가시 텍스트 길이.
+
+    파이프라인의 thin content 게이트용 — AI 생성이 통째로 실패해 카드 나열만
+    남은 글이 그대로 발행되는 것을 막는 판단 기준.
+    """
+    if not html:
+        return 0
+    return len(_TAG_RE.sub("", html).strip())
 
 
 @dataclass
@@ -272,6 +287,70 @@ def _build_related_html(related_links: list) -> str:
     )
 
 
+def _build_comparison_table(keyword: str, products: list,
+                            theme: ProductTheme) -> str:
+    """상품 한눈에 비교표 — 링크 없는 순수 정보성 <table>.
+
+    카드(제휴 링크) 나열만으로는 애드센스 thin content 판정을 받으므로,
+    수집 데이터를 표로 재구성해 '비교' 가치를 더한다. 링크가 없어 제휴 링크
+    밀도도 올리지 않는다. 데이터가 있는 컬럼만 동적으로 노출.
+    """
+    if not products or len(products) < 2:
+        return ""
+
+    has_rating = any(p.get("rating") for p in products)
+    has_review = any(_parse_count(p.get("review_count")) for p in products)
+    has_sales  = any(_parse_count(p.get("sales_num")) for p in products)
+
+    heads = ["순위", "상품명", "가격"]
+    if has_rating:
+        heads.append("평점")
+    if has_review:
+        heads.append("리뷰")
+    elif has_sales:
+        heads.append("판매")
+
+    th = "".join(
+        f'<th style="padding:8px 10px;background:#f4f5f7;border:1px solid #e3e5e8;'
+        f'font-size:12px;color:#333;white-space:nowrap;">{h}</th>'
+        for h in heads
+    )
+
+    rows = []
+    for i, p in enumerate(products):
+        name = _html.escape(_shorten_product_name(p.get("name", "") or "", 42))
+        cells = [
+            f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+            f'text-align:center;font-weight:700;color:{theme.accent_color};">{i + 1}</td>',
+            f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+            f'color:#333;">{name}</td>',
+            f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+            f'white-space:nowrap;color:#333;">{p.get("price", "") or "-"}</td>',
+        ]
+        if has_rating:
+            cells.append(
+                f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+                f'text-align:center;white-space:nowrap;">{p.get("rating", "") or "-"}</td>')
+        if has_review:
+            cells.append(
+                f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+                f'text-align:center;white-space:nowrap;">{p.get("review_count", "") or "-"}</td>')
+        elif has_sales:
+            cells.append(
+                f'<td style="padding:8px 10px;border:1px solid #e3e5e8;font-size:12px;'
+                f'text-align:center;white-space:nowrap;">{p.get("sales_num", "") or "-"}</td>')
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    return (
+        f'<h2 style="font-size:18px;margin:26px 0 12px;color:#222;">'
+        f'{keyword} 한눈에 비교</h2>'
+        f'<div style="overflow-x:auto;margin:0 auto 6px;max-width:680px;">'
+        f'<table style="width:100%;border-collapse:collapse;background:#fff;">'
+        f'<thead><tr>{th}</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
 def _build_itemlist_jsonld(keyword: str, products: list) -> str:
     """ItemList JSON-LD — PRODUCT_JSONLD=true 일 때만 본문에 삽입.
 
@@ -301,14 +380,28 @@ def _build_itemlist_jsonld(keyword: str, products: list) -> str:
             + json.dumps(data, ensure_ascii=False) + "</script>")
 
 
+def _style_guide_html(guide_html: str) -> str:
+    """AI 구매 가이드(<h2>/<h3>/<p> 무스타일)를 포스트 톤에 맞춰 인라인 스타일링."""
+    if not guide_html:
+        return ""
+    g = guide_html
+    g = g.replace("<h2>", '<h2 style="font-size:18px;margin:26px 0 12px;color:#222;">')
+    g = g.replace("<h3>", '<h3 style="font-size:15px;margin:18px 0 8px;color:#333;">')
+    g = g.replace("<p>", '<p style="font-size:14px;line-height:1.8;color:#444;margin:0 0 12px;">')
+    return g
+
+
 def render_product_post(keyword: str, products: list, theme: ProductTheme,
                         intro_text: str = "",
                         pick_reasons: list = None,
-                        related_links: list = None) -> tuple:
+                        related_links: list = None,
+                        guide_html: str = "") -> tuple:
     """(title, content_html, excerpt, slug) 반환. content 는 wp:html 블록으로 감쌈.
 
     related_links: publish_queue 최근 글 [{url,title},...] — 있을 때만 내부링크
     블록 렌더 (WP 커널 등 기존 호출처는 None 그대로 → 비회귀).
+    guide_html: generate_product_guide() 결과 (<h2>/<h3>/<p>) — 카드 아래
+    구매 가이드+FAQ 섹션. 빈 값이면 기존 레이아웃 그대로 (비회귀).
     """
     if not products:
         return "", "", "", ""
@@ -343,6 +436,8 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
     )
     related_html = _build_related_html(related_links or [])
     jsonld_html = _build_itemlist_jsonld(keyword, products)
+    table_html = _build_comparison_table(keyword, products, theme)
+    guide_styled = _style_guide_html(guide_html)
 
     inner_html = (
         f'<div style="max-width:680px;margin:0 auto;padding:20px 16px;'
@@ -356,6 +451,8 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
         f'{intro_html}'
         f'{section_h2}'
         f'{cards_html}'
+        f'{table_html}'
+        f'{guide_styled}'
         f'{related_html}'
         f'<div style="text-align:center;padding:16px 0 8px;font-size:11px;color:#bbb;">'
         f'{theme.footer_note}</div>'

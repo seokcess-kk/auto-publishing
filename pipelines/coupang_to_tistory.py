@@ -22,9 +22,13 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-from common.ai_intro import generate_product_intro, generate_product_pick_reasons
+from common.ai_intro import (
+    generate_product_guide,
+    generate_product_intro,
+    generate_product_pick_reasons,
+)
 from common.logger import log
-from common.product_html import COUPANG_THEME, render_product_post
+from common.product_html import COUPANG_THEME, render_product_post, visible_text_len
 from common.tistory_blogs import resolve_blog_name
 from publishers.tistory import TistoryPublisher
 from sources.coupang import CoupangSource
@@ -39,16 +43,19 @@ SCHEDULE = {
 
 
 def _build_content(keyword: str, products: list) -> tuple:
-    """(title, content, excerpt, slug) — COUPANG_THEME + AI 도입부 + 카드 픽 이유."""
+    """(title, content, excerpt, slug) — COUPANG_THEME + AI 도입부 + 카드 픽 이유
+    + 구매 가이드/FAQ (애드센스 thin content 대응 본문 보강)."""
     if not products:
         return "", "", "", ""
     intro_text   = generate_product_intro(keyword, products)
     pick_reasons = generate_product_pick_reasons(keyword, products)
+    guide_html   = generate_product_guide(keyword, products)
     related = _recent_tistory_links()
     return render_product_post(keyword, products, COUPANG_THEME,
                                 intro_text=intro_text,
                                 pick_reasons=pick_reasons,
-                                related_links=related)
+                                related_links=related,
+                                guide_html=guide_html)
 
 
 def _recent_tistory_links() -> list:
@@ -136,6 +143,17 @@ def run(count_per_keyword: "int | None" = None, keyword: "str | None" = None) ->
             theme = products[0].get("keyword") or kw
             is_curated = products[0].get("source_mode") in ("goldbox", "bestcategory")
             title, content, _excerpt, _slug = _build_content(theme, products)
+
+            # 애드센스 thin content 게이트 — AI 생성(도입부/픽/가이드)이 통째로
+            # 실패하면 카드 나열만 남는다. 그런 글은 발행하지 않고 키워드를
+            # 풀에 남긴다 (published_keywords 미기록 → 다음 슬롯 재시도).
+            body_chars = visible_text_len(content)
+            min_chars = int(os.getenv("MIN_POST_VISIBLE_CHARS", "1200"))
+            if body_chars < min_chars:
+                log(f"'{theme}' 본문 {body_chars}자 < {min_chars}자 — "
+                    f"thin content 방지 위해 발행 skip (AI 생성 실패 여부 확인)", "error")
+                continue
+
             image_url = products[0].get("image", "")
             ai_tags = generate_related_tags(
                 title, context=f"쿠팡 상품 / 키워드 {theme}", n=3,

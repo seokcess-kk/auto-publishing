@@ -252,7 +252,7 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
 
             link_url = article.get("short_url") or article.get("url", "")
 
-            # 본문 — thin content 탈출용 AI 본문(<h2>+<p>) 생성, 실패 시 단순 구조
+            # 본문 — thin content 탈출용 AI 본문(<h2>+<p>) 생성
             ai_body = ""
             if use_ai_summary:
                 try:
@@ -260,6 +260,18 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
                     ai_body = generate_newspick_article(raw_title, category)
                 except Exception as e:
                     log(f"[뉴스픽] 본문 생성 예외: {e}", "warn")
+
+            # 애드센스 thin content 게이트 — AI 본문 없이 발행하면 인사말+링크
+            # +마무리 3줄 글이 된다 (애드센스 '가치가 별로 없는 콘텐츠' 원인).
+            # skip 하면 제목이 history 에 안 남아 다음 슬롯에서 재시도된다.
+            if use_ai_summary:
+                from common.ai_intro import html_text_len
+                body_chars = html_text_len(ai_body)
+                min_chars = int(os.getenv("NEWSPICK_MIN_BODY_CHARS", "300"))
+                if body_chars < min_chars:
+                    log(f"[뉴스픽] AI 본문 {body_chars}자 < {min_chars}자 — "
+                        f"thin content 방지 위해 발행 skip: {raw_title[:30]}", "error")
+                    continue
 
             parts = [f"<p>{intro}</p>"]
             if ai_body:

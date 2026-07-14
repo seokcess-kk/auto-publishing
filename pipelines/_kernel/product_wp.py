@@ -11,7 +11,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from common.ai_intro import generate_product_intro, generate_product_pick_reasons
+from common.ai_intro import (
+    generate_product_guide,
+    generate_product_intro,
+    generate_product_pick_reasons,
+)
 from common.logger import log
 from common.notifier import notify_pipeline_result
 from common.product_html import ProductTheme, render_product_post
@@ -35,14 +39,16 @@ class ProductWpConfig:
 
 
 def _build_content(keyword: str, products: list, theme: ProductTheme) -> tuple:
-    """(title, content, excerpt, slug). intro + 카드별 픽 이유는 AI 생성."""
+    """(title, content, excerpt, slug). intro + 카드별 픽 이유 + 구매 가이드는 AI 생성."""
     if not products:
         return "", "", "", ""
     intro_text   = generate_product_intro(keyword, products)
     pick_reasons = generate_product_pick_reasons(keyword, products)
+    guide_html   = generate_product_guide(keyword, products)
     return render_product_post(keyword, products, theme,
                                 intro_text=intro_text,
-                                pick_reasons=pick_reasons)
+                                pick_reasons=pick_reasons,
+                                guide_html=guide_html)
 
 
 def run(cfg: ProductWpConfig, profile_name: str = None,

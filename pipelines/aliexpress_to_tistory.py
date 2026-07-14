@@ -127,6 +127,17 @@ def run(count_per_keyword: int = 10,
                 related = []
             title, content, _excerpt, _slug = build_content(
                 keyword, products, related_links=related)
+
+            # 애드센스 thin content 게이트 — AI 생성이 통째로 실패해 카드
+            # 나열만 남은 글은 발행하지 않는다 (키워드는 풀에 남아 재시도).
+            from common.product_html import visible_text_len
+            body_chars = visible_text_len(content)
+            min_chars = int(os.getenv("MIN_POST_VISIBLE_CHARS", "1200"))
+            if body_chars < min_chars:
+                log(f"'{keyword}' 본문 {body_chars}자 < {min_chars}자 — "
+                    f"thin content 방지 위해 발행 skip (AI 생성 실패 여부 확인)", "error")
+                continue
+
             image_url = products[0].get("image", "")
             tags = [keyword, "알리익스프레스", "해외직구", "추천상품"]
 

@@ -75,6 +75,14 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "python tools/naver_manual_login.py 로 수동 로그인",
     ),
     (
+        # thin content 게이트 — AI 생성(도입부/가이드/뉴스픽 본문) 실패로 본문이
+        # 기준 미달이면 발행을 차단한다. 네트워크 패턴보다 먼저 매칭해야
+        # 'AI 실패 → 발행 차단' 이라는 실제 조치 대상이 라벨에 드러난다.
+        re.compile(r"thin\s*content\s*방지", re.I),
+        "AI 본문 생성 실패 (thin content 발행 차단)",
+        "ANTHROPIC_API_KEY / GEMINI_API_KEY 상태 확인 — 다음 슬롯에서 자동 재시도",
+    ),
+    (
         re.compile(r"Threads.*?rate.?limit|status.*?429", re.I),
         "Threads/SNS API rate-limit",
         "잠시 대기 후 재시도 (자동 회복)",
