@@ -87,7 +87,10 @@ def build_pin_meta(product: dict, keyword: str) -> dict:
     rating = product.get("rating", "")
     review = product.get("review_count", "")
 
-    parts = []
+    # 핀 설명 첫 줄에 대가성 문구 — 핀 자체가 제휴 링크(link)를 물고 있어
+    # 쿠팡 파트너스 심사 대상 게시물이다 (최상단 표기 요건).
+    from common import affiliate_notice
+    parts = [affiliate_notice.notice_text(affiliate_notice.COUPANG), ""]
     if price:
         parts.append(f"💰 {price}")
     if rating and rating != "No data":

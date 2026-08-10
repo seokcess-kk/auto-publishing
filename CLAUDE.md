@@ -201,6 +201,44 @@ shortcode and 404s on numeric IDs. `_publish_container` now calls
 canonical `@<username>/post/<shortcode>` URL. `tools/fix_threads_urls.py`
 back-fills broken URLs already in `publish_queue.json`.
 
+### Affiliate disclosure placement (`common/affiliate_notice.py`)
+
+Coupang Partners rejected final approval on 2026-08-10 with: "대가성 문구는
+활동 게시물 최상단 혹은 제목에 기재하셔야 합니다" (target post was a Threads
+one). The old code put the disclosure in a *footer* and used the conditional
+phrasing "수수료를 제공받을 수 있습니다" — both are explicit violations.
+
+`common/affiliate_notice.py` is now the only place a disclosure string exists.
+Three requirements it encodes, all of which the reviewer checks:
+
+1. First element of the post body (or the title) — never the footer, never
+   after tags/links/images.
+2. Visually distinct from body copy — 16px bold `#e4000f` on a bordered box
+   (body is 14–15px grey).
+3. Declarative wording only. `제공받습니다`, never `제공받을 수 있습니다`.
+
+Every channel goes through it:
+
+| Channel | Insertion point |
+|---------|-----------------|
+| WP / Tistory / GitHub (product posts) | `render_product_post()` — first node inside the `wp:html` wrapper |
+| Tistory/WP/Naver (card-appended posts) | pipeline calls `prepend_html()` before `post()` |
+| Naver Blog | `_notice_component()` right after `documentTitle` in all 4 SE builders |
+| Naver Cafe | `_notice_component()` as `components[0]` in all 3 SE builders + first line of the affiliate comment |
+| Threads | `prepend_text()` on chain part 0 **and** the part carrying the link (replies surface as standalone posts) |
+| Pinterest | first line of the pin description |
+
+`ensure_html()` is a last-resort net wired into `tistory.py`,
+`tistory_bridge.py`, `wordpress.py`, `github_pages.py` `post()`: if the body
+contains a coupang/aliexpress link but no notice, it prepends one. It cannot
+see through shortened URLs, so pipelines must still insert explicitly — the net
+only catches a regression, it is not the mechanism.
+
+All helpers are idempotent (`has_notice()` matches `<!--affiliate-notice-->`
+or the visible `[광고]` label), so double insertion is impossible.
+`AFFILIATE_NOTICE_IN_TITLE=true` additionally prefixes titles with `[광고]` —
+off by default because it costs CTR; turn it on only if review fails again.
+
 ### Aliexpress keyword pool filtering
 
 ItemScout's pool contains categories that have zero match on Aliexpress
@@ -261,6 +299,7 @@ Chrome at `Program Files\Google\Chrome`.
 | `common/tistory_blogs.py` | `make_publisher(blog_name)` returns web or bridge publisher based on `TISTORY_PUBLISHER`. All `*_to_tistory.py` pipelines must use this, not `TistoryPublisher` directly. |
 | `extension/manifest.json` | Three content_script entries — one in MAIN world for `*.tistory.com/manage/newpost*`, one isolated for the same, one all_frames for `dkaptcha.kakao.com/*`. Host permissions include `<all_urls>` because `tabs.captureVisibleTab` requires it. |
 | `publishers/threads.py` | `_publish_container` must call `_fetch_permalink` to get the canonical URL. Reverting that change re-introduces 404 URLs in publish_queue. |
+| `common/affiliate_notice.py` | Single source of truth for the paid-partnership disclosure. Moving it back to a footer, or reintroducing "받을 수 있습니다", re-triggers Coupang Partners rejection. |
 | `common/notifier.py` | `_send_telegram` is reused by bridge for "발행 완료" messages. Pipeline-side `notify_pipeline_result` is skipped when `TISTORY_PUBLISHER=bridge` so users don't get false-positive "발행 성공" messages while the queue is still being processed. |
 | `common/run_diagnosis.py` | Stderr-pattern → cause label mapping for the daily summary. Add patterns here when introducing new failure modes. |
 | `tools/probe_*.py`, `tools/test_dkaptcha_*.py`, `tools/capture_editor_publish.py` | Debugging artifacts from the DKAPTCHA investigation. Useful templates for future "what is Tistory doing now" debugging — they demonstrate Playwright + page.evaluate + frame-level inspection patterns. |

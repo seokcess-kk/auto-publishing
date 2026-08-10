@@ -100,6 +100,13 @@ def build_markdown(keyword: str, products: list) -> tuple:
 
     body_parts = []
 
+    # 대가성 문구 — 본문 최상단, 본문과 구별되게 (쿠팡 파트너스 심사 요건)
+    from common import affiliate_notice
+    body_parts.append(
+        f"> ### <span style=\"color:#e4000f;\">"
+        f"{affiliate_notice.notice_text(affiliate_notice.COUPANG)}</span>\n"
+    )
+
     # 메타 설명
     body_parts.append(
         f"해당 게시물에서는 데이터 분석 도구를 이용하여 "
@@ -152,9 +159,9 @@ def build_markdown(keyword: str, products: list) -> tuple:
 
         body_parts.append(card)
 
-    # 파트너스 고지
+    # 파트너스 재고지 (요건 충족은 본문 최상단 문구가 담당)
     body_parts.append(
-        f"\n> 💦 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.\n"
+        f"\n> 💦 {affiliate_notice.notice_text(affiliate_notice.COUPANG, label=False)}\n"
     )
 
     markdown_body = "\n".join(body_parts)

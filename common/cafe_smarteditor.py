@@ -121,6 +121,27 @@ def _table_row(cell: dict) -> dict:
     return {"cells": [cell], "@ctype": "tableRow"}
 
 
+def _notice_component(*sources: str) -> dict:
+    """제휴 대가성 문구 컴포넌트 — components 리스트 **맨 앞**에 둔다.
+
+    카페 글은 제휴 링크를 댓글로 돌리는 구조라 본문에 고지가 아예 없었다.
+    쿠팡 파트너스 심사는 '활동 게시물 최상단' 표기를 요구한다(2026-08-10
+    최종 승인 반려 사유). 본문(fs15) 대비 fs16 볼드 빨강으로 구별한다.
+    """
+    from common import affiliate_notice as _an
+    return {
+        "id": _id(),
+        "layout": "default",
+        "value": [
+            _paragraph([_text_node(f"[{_an.LABEL}] {sentence}",
+                                   color="#e4000f", size="fs16", bold=True)],
+                       align="center")
+            for sentence in _an.notice_sentences(*sources)
+        ],
+        "@ctype": "text",
+    }
+
+
 def _empty_text_component() -> dict:
     """본문 끝에 들어가는 빈 텍스트 component (Old_Source 와 동일)."""
     return {
@@ -242,7 +263,12 @@ def build_coupang_document(
             "theme": "default",
             "language": "ko-KR",
             "id": _doc_id(),
-            "components": [table_component, _empty_text_component()],
+            # 대가성 문구가 반드시 첫 컴포넌트 (쿠팡 파트너스 심사 요건)
+            "components": [
+                _notice_component("coupang"),
+                table_component,
+                _empty_text_component(),
+            ],
             "di": {
                 "dif": False,
                 "dio": [
@@ -282,6 +308,10 @@ def build_realestate_document(
     )
 
     components: list[dict] = []
+
+    # 대가성 문구 — 본문 최상단 (쿠팡 파트너스 심사 요건).
+    # 분양정보 글도 댓글에 쿠팡 제휴 링크가 달린다.
+    components.append(_notice_component("coupang"))
 
     # 도입부 ─────────────────────────────────────────────────────────────
     components.append({
@@ -501,6 +531,9 @@ def build_riseset_document(
     )
 
     components: list[dict] = []
+
+    # 대가성 문구 — 본문 최상단 (쿠팡 파트너스 심사 요건)
+    components.append(_notice_component("coupang"))
 
     # 헤더: 일출일몰 표 텍스트 (지역별)
     components.append({

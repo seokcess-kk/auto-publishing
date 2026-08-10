@@ -43,6 +43,11 @@ class TistoryBridgePublisher(Publisher):
         # DKAPTCHA 영향 없이 가능한 image_url 그대로 <img src> 로 prepend.
         image_html = f'<p><img src="{image_url}" alt=""></p>\n' if image_url else ""
 
+        # 안전망 — 제휴 링크가 있는데 대가성 문구가 없으면 본문 최상단에 삽입.
+        # 1차 방어선은 각 파이프라인이지만, 누락 시 심사 반려로 직결된다.
+        from common import affiliate_notice
+        content = affiliate_notice.ensure_html(content)
+
         visibility = int(kwargs.get("visibility", 20))
 
         item_id = enqueue(

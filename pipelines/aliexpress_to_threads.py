@@ -10,7 +10,9 @@
 - 글자 수:  편당 150자 (Threads above-the-fold 노출 최적)
 - 해시태그: 사용 안 함 (Threads 톤상 본문에 자연스럽게 녹이는 게 적합)
 - 링크:     마지막 게시물 본문에 어필리에이트 단축링크 자동 추가
-- 의무 고지: 마지막 게시물 끝에 '※ 알리익스프레스 파트너스 활동으로 수수료 받을 수 있음' 자동 삽입
+- 의무 고지: 게시물 **첫 줄**에 '[광고] 이 게시물은 알리익스프레스 파트너스
+             활동의 일환으로...' (common.affiliate_notice). 제휴 심사는 최상단
+             표기를 요구한다 — 하단 표기는 쿠팡 최종 승인 반려 사유였다.
 
 실행:
     python -m pipelines.aliexpress_to_threads                       # single (기본)
@@ -27,6 +29,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
+from common import affiliate_notice
 from common.ai_intro import (
     generate_threads_caption,
     generate_threads_chain,
@@ -123,7 +126,9 @@ SCHEDULE = {
 }
 
 
-_DISCLOSURE = "※ 알리익스프레스 파트너스 활동으로 수수료 받을 수 있음"
+def _with_notice(text: str) -> str:
+    """게시물 첫 줄에 대가성 문구 삽입 (제휴 심사 요건: 최상단 표기)."""
+    return affiliate_notice.prepend_text(text, affiliate_notice.ALIEXPRESS)
 
 
 def _shorten(url: str) -> str:
@@ -148,7 +153,7 @@ def _publish_single(pub: ThreadsPublisher, kw: str, product: dict,
     body = caption
     if short_link:
         body = f"{caption}\n\n👉 {short_link}"
-    body = f"{body}\n\n{_DISCLOSURE}"
+    body = _with_notice(body)
 
     return pub.post(
         title="", content=body, tags=[],
@@ -170,7 +175,9 @@ def _publish_chain(pub: ThreadsPublisher, kw: str, product: dict,
 
     if short_link:
         chain_parts[-1] = f"{chain_parts[-1]}\n\n👉 {short_link}"
-    chain_parts[-1] = f"{chain_parts[-1]}\n\n{_DISCLOSURE}"
+    # 1편(스레드 진입점) + 링크가 실린 편 양쪽 첫 줄에 고지
+    chain_parts[0]  = _with_notice(chain_parts[0])
+    chain_parts[-1] = _with_notice(chain_parts[-1])
 
     log(f"[chain 1/{len(chain_parts)}] 후킹 게시물 발행", "step")
     first = pub.post(

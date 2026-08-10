@@ -22,6 +22,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+from common import affiliate_notice
 from common.logger import log
 from common.product_card import (
     REALESTATE_DEFAULT_KEYWORDS,
@@ -174,6 +175,10 @@ def run(count: int = 1,
             # 네이버 블로그는 inline <script> 를 필터링하므로 난독화 비활성.
             obfuscate = False if target == "naver" else None  # None → env 따름
             content = post["content"] + render_product_card(product, obfuscated=obfuscate)
+            if product:
+                # 대가성 문구는 본문 최상단 (쿠팡 파트너스 심사 요건)
+                content = affiliate_notice.prepend_html(
+                    content, affiliate_notice.COUPANG)
 
             post_kwargs = dict(
                 title=title,

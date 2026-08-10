@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from common import affiliate_notice
 from common.logger import log
 from common.notifier import notify_pipeline_result
 from common.product_card import (
@@ -287,9 +288,16 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             parts.append(f"<p>{outro}</p>")
             content = "\n".join(parts)
 
-            # 본문 하단에 쿠팡 추천 상품 카드 + 파트너스 고지 (난독화 모드 default)
+            # 본문 하단에 쿠팡 추천 상품 카드 (난독화 모드 default)
             if product:
                 content += render_product_card(product)
+
+            # 대가성 문구는 본문 최상단 — 뉴스픽 제휴 링크는 항상 있고,
+            # 쿠팡 상품 카드가 붙었으면 두 제휴처를 함께 고지한다.
+            notice_sources = [affiliate_notice.NEWSPICK]
+            if product:
+                notice_sources.append(affiliate_notice.COUPANG)
+            content = affiliate_notice.prepend_html(content, *notice_sources)
 
             # 정적 2 + AI 관련 3 + 네이버 연관검색어(트렌드) 최대 3 = 검색 태그 강화
             from common.ai_intro import generate_related_tags

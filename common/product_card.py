@@ -123,10 +123,13 @@ def render_product_card(product: dict, *, obfuscated: Optional[bool] = None) -> 
         f'<div style="font-size:11px;color:#888;">{meta}</div>'
         '</div></div></a>'
     )
-    # 쿠팡 파트너스 의무 고지 — 공정거래위원회 추천·보증 심사지침 대응
+    # 카드 하단 재고지. 심사 요건인 '게시물 최상단' 고지는 이 카드를 붙이는
+    # 파이프라인이 본문 앞에 affiliate_notice.prepend_html() 로 넣는다 —
+    # 카드는 본문 하단에 붙으므로 여기만으로는 요건을 못 채운다.
     disclosure_footer = (
         '<p style="text-align:center;font-size:11px;color:#bbb;margin:8px 0 0 0;">'
-        '※ 쿠팡 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.</p>'
+        '※ 이 게시물은 쿠팡 파트너스 활동의 일환으로, '
+        '이에 따른 일정액의 수수료를 제공받습니다.</p>'
         '</div>'
     )
     return header + inner + disclosure_footer

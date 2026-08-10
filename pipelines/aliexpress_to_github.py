@@ -88,6 +88,12 @@ def _build_markdown(keyword: str, products: list) -> tuple:
         pass
 
     body_parts = []
+    # 대가성 문구 — 본문 최상단, 본문과 구별되게 (제휴 심사 요건)
+    from common import affiliate_notice
+    body_parts.append(
+        f"> ### <span style=\"color:#ff4747;\">"
+        f"{affiliate_notice.notice_text(affiliate_notice.ALIEXPRESS)}</span>\n"
+    )
     body_parts.append(
         f"알리익스프레스에서 **{keyword}** 인기 상품 TOP{len(products)}를 소개합니다.\n"
     )
@@ -131,8 +137,9 @@ def _build_markdown(keyword: str, products: list) -> tuple:
         )
         body_parts.append(card)
 
+    # 재고지 (요건 충족은 본문 최상단 문구가 담당)
     body_parts.append(
-        "\n> 💡 이 포스트는 알리익스프레스 파트너스 활동의 일환으로 수수료를 받을 수 있습니다.\n"
+        f"\n> 💡 {affiliate_notice.notice_text(affiliate_notice.ALIEXPRESS, label=False)}\n"
     )
 
     return title, "\n".join(body_parts), category, tags

@@ -120,6 +120,10 @@ class WordPressPublisher(Publisher):
         """
         log(f"WordPress 발행: {title}", "step")
 
+        # 안전망 — 제휴 링크가 있는데 대가성 문구가 없으면 본문 최상단에 삽입.
+        from common import affiliate_notice
+        content = affiliate_notice.ensure_html(content)
+
         # 카테고리
         cat_ids = []
         if category:

@@ -11,6 +11,7 @@ from typing import Optional
 
 from common.ai_intro import generate_text
 from common.logger import log
+from common import affiliate_notice as _affiliate_notice
 from common.product_card import render_product_card
 
 
@@ -158,10 +159,15 @@ def build_content(info_list: list, product: dict,
         if product else ""
     )
 
+    # ── 대가성 문구는 상품 카드가 붙을 때만, 그리고 반드시 본문 최상단에
+    #    (쿠팡 파트너스 심사 요건 — 하단 푸터 표기는 반려 사유)
+    notice_html = _affiliate_notice.notice_html(_affiliate_notice.COUPANG) if product else ""
+
     # ── 전체 래퍼
     content = (
         f'<div style="max-width:680px;margin:0 auto;padding:20px 16px;'
         f'font-family:-apple-system,\'Noto Sans KR\',sans-serif;">'
+        f'{notice_html}'
         f'<h2 style="font-size:18px;color:#333;margin-bottom:16px;">'
         f'🌅 {date_kor} 일출·일몰 시각 안내</h2>'
         f'{intro_html}'

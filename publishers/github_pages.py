@@ -143,6 +143,11 @@ class GitHubPagesPublisher(Publisher):
 
         log(f"GitHub Pages 발행: {title}", "step")
 
+        # 안전망 — 제휴 링크가 있는데 대가성 문구가 없으면 본문 최상단에 삽입.
+        # 마크다운 본문이지만 HTML 배너도 그대로 렌더된다(Jekyll).
+        from common import affiliate_notice
+        content = affiliate_notice.ensure_html(content)
+
         # Front Matter
         tag_list = tags or []
         tag_str = ", ".join(tag_list)

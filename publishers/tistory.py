@@ -885,6 +885,11 @@ class TistoryPublisher(Publisher):
 
         log(f"티스토리 발행: {title[:40]}", "step")
 
+        # 안전망 — 제휴 링크가 있는데 대가성 문구가 없으면 본문 최상단에 삽입.
+        # 1차 방어선은 각 파이프라인이지만, 누락 시 심사 반려로 직결된다.
+        from common import affiliate_notice
+        content = affiliate_notice.ensure_html(content)
+
         # 대표 이미지 업로드
         thumbnail_key = ""
         thumbnail_filename = ""

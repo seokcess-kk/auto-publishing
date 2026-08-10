@@ -10,7 +10,11 @@
 - 글자 수:  편당 150자 (Threads above-the-fold 노출 최적)
 - 해시태그: 사용 안 함 (Threads 톤상 본문에 자연스럽게 녹이는 게 적합)
 - 링크:     마지막 reply 본문에 어필리에이트 단축링크 자동 추가
-- 의무 고지: 마지막 reply 끝에 '※ 쿠팡 파트너스 활동으로 수수료 받을 수 있음' 자동 삽입
+- 의무 고지: 게시물 **첫 줄**에 '[광고] 이 게시물은 쿠팡 파트너스 활동의 일환으로...'
+             (common.affiliate_notice). 쿠팡 파트너스 심사는 최상단 표기를
+             요구한다 — 하단/마지막 reply 표기는 2026-08-10 최종 승인 반려 사유.
+             chain 모드는 1편과 링크가 실린 편 양쪽에 넣는다 (각 reply 도
+             타임라인에서 독립 게시물로 노출되므로).
 
 실행:
     python -m pipelines.coupang_to_threads                       # chain (기본)
@@ -26,6 +30,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
+from common import affiliate_notice
 from common.ai_intro import (
     generate_threads_caption,
     generate_threads_chain,
@@ -70,8 +75,8 @@ def _publish_single(pub: ThreadsPublisher, kw: str, product: dict,
     body = caption
     if short_link:
         body = f"{caption}\n\n👉 {short_link}"
-    # 공정거래위 의무 고지 (단축형)
-    body = f"{body}\n\n※ 쿠팡 파트너스 활동으로 수수료 받을 수 있음"
+    # 의무 고지 — 게시물 최상단(첫 줄). 쿠팡 파트너스 심사 요건.
+    body = affiliate_notice.prepend_text(body, affiliate_notice.COUPANG)
 
     # 해시태그 제외 (Threads 톤상 본문에 자연스럽게 녹이는 게 더 적합).
     return pub.post(
@@ -93,12 +98,16 @@ def _publish_chain(pub: ThreadsPublisher, kw: str, product: dict,
     # 최대 3편까지만 사용
     chain_parts = chain_parts[:3]
 
-    # 마지막 편에 링크 + 의무 고지 부착 (해시태그는 Threads 톤상 제외)
+    # 마지막 편에 링크 부착 (해시태그는 Threads 톤상 제외)
     if short_link:
         chain_parts[-1] = f"{chain_parts[-1]}\n\n👉 {short_link}"
 
-    # 공정거래위 의무 고지 (단축형) — 어필리에이트 활동 명시는 필수
-    chain_parts[-1] = f"{chain_parts[-1]}\n\n※ 쿠팡 파트너스 활동으로 수수료 받을 수 있음"
+    # 의무 고지 — 1편 첫 줄(스레드 진입점 = 심사 대상 게시물)과 링크가 실린
+    # 마지막 편 첫 줄 양쪽에. reply 도 타임라인에서 독립 게시물로 노출된다.
+    chain_parts[0] = affiliate_notice.prepend_text(
+        chain_parts[0], affiliate_notice.COUPANG)
+    chain_parts[-1] = affiliate_notice.prepend_text(
+        chain_parts[-1], affiliate_notice.COUPANG)
 
     # 1편: post() — 이미지는 첫 번째 게시물에만 부착
     log(f"[chain 1/{len(chain_parts)}] 후킹 게시물 발행", "step")

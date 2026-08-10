@@ -191,13 +191,16 @@ def run() -> None:
             short = shorten_url(product["affiliate_url"])
         except Exception:
             short = product["affiliate_url"]
+        # 제휴 링크가 댓글에 실리므로 댓글도 첫 줄에 대가성 문구를 둔다.
+        from common import affiliate_notice
         comment_lines = [
+            affiliate_notice.notice_text(affiliate_notice.COUPANG),
+            "",
             f"구입 링크 ▶▶▶ {short or product['affiliate_url']} ◀◀◀",
             "",
             f"{date_kor} 지역별 해당 출몰시각정보 (일출, 일몰, 월출, 월몰)",
             "",
-            "🥢🥢🥢 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다. "
-            "행운이 가득한 하루 되세요.",
+            "🥢🥢🥢 행운이 가득한 하루 되세요.",
         ]
         try:
             cafe.post_comment(article_id, "\n".join(comment_lines))

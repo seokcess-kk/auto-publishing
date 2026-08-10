@@ -121,6 +121,22 @@ def _empty_line() -> dict:
     return _text_component([_paragraph([_styled_node("")])])
 
 
+def _notice_component(*sources: str) -> dict:
+    """제휴 대가성 문구 컴포넌트 — 반드시 제목 바로 다음(본문 최상단)에 둔다.
+
+    쿠팡 파트너스 심사는 '게시물 최상단 혹은 제목' 표기를 요구한다. 본문
+    하단 푸터 표기는 2026-08-10 최종 승인 반려 사유였다. 본문(fs15 회색)
+    대비 fs16 볼드 빨강으로 '본문과 구별' 요건도 함께 만족시킨다.
+    """
+    from common import affiliate_notice as _an
+    return _text_component([
+        _paragraph([_styled_node(f"[{_an.LABEL}] {sentence}",
+                                 bold=True, color="#e4000f", size="fs16")],
+                   align="center")
+        for sentence in _an.notice_sentences(*sources)
+    ])
+
+
 # ─── 일출일몰 전용 documentModel 빌더 ─────────────────────────────────────
 
 def build_riseset_document(title: str, intro: str,
@@ -148,6 +164,12 @@ def build_riseset_document(title: str, intro: str,
         "align": "left",
         "@ctype": "documentTitle",
     })
+
+    # ── 1.5 대가성 문구 (제휴 상품 카드가 붙는 글에 한해, 본문 최상단)
+    if product:
+        from common import affiliate_notice as _an
+        components.append(_notice_component(_an.COUPANG))
+        components.append(_empty_line())
 
     # ── 2. 도입부
     if intro:
@@ -270,12 +292,14 @@ def build_riseset_document(title: str, intro: str,
         components.append(_table_component([product_row], col_count=1, width=38))
         components.append(_empty_line())
 
-    # ── 6. 파트너스 고지
-    components.append(_text_component([
-        _paragraph([_styled_node(
-            "※ 쿠팡 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
-            color="#999999", size="fs11")], align="center")
-    ]))
+    # ── 6. 파트너스 재고지 (요건 충족은 최상단 _notice_component 가 담당)
+    if product:
+        components.append(_text_component([
+            _paragraph([_styled_node(
+                "※ 이 게시물은 쿠팡 파트너스 활동의 일환으로, "
+                "이에 따른 일정액의 수수료를 제공받습니다.",
+                color="#999999", size="fs11")], align="center")
+        ]))
 
     doc = {
         "documentId": "",
@@ -327,6 +351,11 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
         "align": "left",
         "@ctype": "documentTitle",
     })
+
+    # 1.5) 대가성 문구 — 본문 최상단 (쿠팡 파트너스 심사 요건)
+    from common import affiliate_notice as _an
+    components.append(_notice_component(_an.COUPANG))
+    components.append(_empty_line())
 
     # 2) 헤더 (키워드 + 추천 안내)
     if keyword:
@@ -444,10 +473,11 @@ def build_coupang_naver_document(title: str, intro: str, products: list,
         components.append(_table_component([product_row], col_count=1, width=60))
         components.append(_empty_line())
 
-    # 5) 파트너스 의무 고지
+    # 5) 파트너스 재고지 (요건 충족은 최상단 _notice_component 가 담당)
     components.append(_text_component([
         _paragraph([_styled_node(
-            "※ 쿠팡 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            "※ 이 게시물은 쿠팡 파트너스 활동의 일환으로, "
+            "이에 따른 일정액의 수수료를 제공받습니다.",
             color="#999999", size="fs11")], align="center")
     ]))
 
@@ -496,6 +526,11 @@ def build_aliexpress_naver_document(title: str, intro: str, products: list,
         "align": "left",
         "@ctype": "documentTitle",
     })
+
+    # 대가성 문구 — 본문 최상단 (제휴 심사 요건)
+    from common import affiliate_notice as _an
+    components.append(_notice_component(_an.ALIEXPRESS))
+    components.append(_empty_line())
 
     if keyword:
         header_nodes = [
@@ -598,9 +633,11 @@ def build_aliexpress_naver_document(title: str, intro: str, products: list,
         components.append(_table_component([product_row], col_count=1, width=60))
         components.append(_empty_line())
 
+    # 재고지 (요건 충족은 최상단 _notice_component 가 담당)
     components.append(_text_component([
         _paragraph([_styled_node(
-            "※ 알리익스프레스 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            "※ 이 게시물은 알리익스프레스 파트너스 활동의 일환으로, "
+            "이에 따른 일정액의 수수료를 제공받습니다.",
             color="#999999", size="fs11")], align="center")
     ]))
 
@@ -653,6 +690,11 @@ def build_newspick_naver_document(title: str, article: dict,
         "@ctype": "documentTitle",
     })
 
+    # 1.5) 대가성 문구 — 본문 최상단 (제휴 심사 요건)
+    from common import affiliate_notice as _an
+    components.append(_notice_component(_an.NEWSPICK))
+    components.append(_empty_line())
+
     # 2) 카테고리 라벨
     if category:
         components.append(_text_component([_paragraph([
@@ -697,10 +739,11 @@ def build_newspick_naver_document(title: str, article: dict,
         components.append(_table_component([button_row], col_count=1, width=70))
         components.append(_empty_line())
 
-    # 5) 푸터 — 출처 표기
+    # 5) 푸터 — 재고지 (요건 충족은 최상단 _notice_component 가 담당)
     components.append(_text_component([
         _paragraph([_styled_node(
-            "※ 본 게시글은 뉴스픽 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+            "※ 이 게시물은 뉴스픽 파트너스 활동의 일환으로, "
+            "이에 따른 일정액의 수수료를 제공받습니다.",
             color="#999999", size="fs11")], align="center")
     ]))
 

@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
+from common import affiliate_notice as _affiliate_notice
+
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -33,7 +35,8 @@ class ProductTheme:
     header_emoji: str          # 예: "📊" 또는 "🛒"
     header_prefix: str         # 예: "데이터 분석 기반" 또는 "알리익스프레스"
     accent_color: str          # 예: "#e4000f" 또는 "#ff4747"
-    footer_note: str           # 예: "※ 파트너스 활동을 통해..."
+    footer_note: str           # 하단 재고지 (본문 최상단 배너는 notice_source 기준)
+    notice_source: str = "coupang"   # common.affiliate_notice 의 제휴처 식별자
     show_discount: bool = False
     meta_fields: List[str] = field(default_factory=list)
     # meta_fields 예: ["rating:⭐ {}", "review_count:{}개 리뷰"]
@@ -439,9 +442,14 @@ def render_product_post(keyword: str, products: list, theme: ProductTheme,
     table_html = _build_comparison_table(keyword, products, theme)
     guide_styled = _style_guide_html(guide_html)
 
+    # 대가성 문구는 반드시 본문 최상단 — 쿠팡 파트너스 심사 요건(2026-08 반려
+    # 사유). 헤더·CTA·이미지보다 앞에 와야 한다.
+    notice_html = _affiliate_notice.notice_html(theme.notice_source)
+
     inner_html = (
         f'<div style="max-width:680px;margin:0 auto;padding:20px 16px;'
         f'font-family:-apple-system,\'Noto Sans KR\',sans-serif;">'
+        f'{notice_html}'
         f'<div style="text-align:center;padding:16px 0 20px;color:#555;font-size:14px;line-height:1.6;">'
         f'{theme.header_emoji} {theme.header_prefix} '
         f'<span style="color:{theme.accent_color};font-weight:600;">'
@@ -470,7 +478,9 @@ COUPANG_THEME = ProductTheme(
     header_emoji="📊",
     header_prefix="데이터 분석 기반",
     accent_color="#e4000f",
-    footer_note="※ 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+    footer_note="※ 이 게시물은 쿠팡 파트너스 활동의 일환으로, "
+                "이에 따른 일정액의 수수료를 제공받습니다.",
+    notice_source=_affiliate_notice.COUPANG,
     show_discount=True,
     meta_fields=["rating:⭐ {}", "review_count:{}개 리뷰"],
     excerpt_template=(
@@ -484,7 +494,9 @@ ALIEXPRESS_THEME = ProductTheme(
     header_emoji="🛒",
     header_prefix="알리익스프레스",
     accent_color="#ff4747",
-    footer_note="※ 알리익스프레스 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다.",
+    footer_note="※ 이 게시물은 알리익스프레스 파트너스 활동의 일환으로, "
+                "이에 따른 일정액의 수수료를 제공받습니다.",
+    notice_source=_affiliate_notice.ALIEXPRESS,
     show_discount=True,
     meta_fields=["rating:⭐ {}", "sales_num:{} 판매"],
     excerpt_template=(

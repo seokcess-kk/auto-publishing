@@ -22,6 +22,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
+from common import affiliate_notice
 from common.logger import log
 from common.product_card import (
     GENERIC_DEFAULT_KEYWORDS,
@@ -205,6 +206,11 @@ def run(count: int = 1, feeds: list = None) -> None:
                 continue
 
             content = body + render_product_card(product)
+            if product:
+                # 제휴 상품 카드가 붙는 글은 대가성 문구가 본문 최상단에
+                # 있어야 한다 (쿠팡 파트너스 심사 요건).
+                content = affiliate_notice.prepend_html(
+                    content, affiliate_notice.COUPANG)
 
             # bridge 모드 publish_queue 귀속 meta (/done 핸들러가 기록)
             result = pub.post(

@@ -114,11 +114,13 @@ def run() -> None:
         aff_url = product.get("affiliate_url", "")
         if aff_url:
             today_info = f"{today_kor} 지역별 해당 출몰시각정보 (일출, 일몰, 월출, 월몰)"
+            # 제휴 링크가 댓글에 실리므로 댓글도 첫 줄에 대가성 문구를 둔다.
+            from common import affiliate_notice
             comment_text = (
+                f"{affiliate_notice.notice_text(affiliate_notice.COUPANG)}\n\n"
                 f"구입 링크 ▶ ▶ {aff_url} ◀ ◀\n\n"
                 f"{today_info}\n\n"
-                f"🐾🐾🐾 파트너스 활동을 통해 일정액의 수수료를 제공받을 수 있습니다. "
-                f"행운이 가득한 하루 되세요."
+                f"🐾🐾🐾 행운이 가득한 하루 되세요."
             )
             time.sleep(3)
             blog.post_comment(result.post_id, comment_text)
