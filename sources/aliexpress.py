@@ -189,6 +189,8 @@ class AliexpressSource:
         # 생성(_shorten_link)이 로그인 HTML 을 받으면 True. 호출자(파이프라인)는
         # 수집 0건이 '키워드 부적합'인지 '세션 만료'인지 이 값으로 구분한다.
         self.session_expired = False
+        # 제휴링크 생성 실패 사유 집계 {not_affiliate/wind_control/...: 건수}
+        self.link_skip_stats: dict = {}
 
     # Context manager 지원
     def __enter__(self):
@@ -583,6 +585,20 @@ class AliexpressSource:
             aff = data.get("data", "")
             if isinstance(aff, str) and aff.startswith("https://s.click.aliexpress.com"):
                 return aff
+
+            # 실패 사유 분류 — 로그/집계용. 특히 is-not-code(제휴 미대상 상품)를
+            # 세션 문제와 구분해야 한다. 알리 코리아 로컬 셀러 상품
+            # ('[당일출고]' 등)은 제휴 프로그램 대상이 아니라 링크가 안 나온다.
+            key = aff.get("mdsKey", "") if isinstance(aff, dict) else str(aff or "")
+            if "is-not-code" in key:
+                reason = "not_affiliate"
+            elif "wind-control" in key:
+                reason = "wind_control"
+            elif "prohibit" in key:
+                reason = "prohibited"
+            else:
+                reason = "unknown"
+            self.link_skip_stats[reason] = self.link_skip_stats.get(reason, 0) + 1
             return ""
         except Exception as e:
             log(f"알리 링크 생성 오류: {e}", "warn")
@@ -607,7 +623,13 @@ class AliexpressSource:
 
         log(f"알리 검색 (tracking={self.tracking_id}): {keyword}", "step")
 
-        products = self._search_products(keyword, count=count * 2)  # 여유분
+        # 후보 풀 — 검색 결과의 상당수가 제휴 미대상(알리 코리아 로컬 셀러)이라
+        # count*2 로는 전멸한다. 실측: '보조배터리' 20개 중 적격 9개이고 상위 6개가
+        # 연속 비대상 → count=1(Threads)이면 후보 2개가 모두 비대상이라 0건 발행.
+        # 최소 12개를 확보한다. 루프는 count 개 성공 시 즉시 중단하므로
+        # 적격률이 높은 키워드에서 추가 비용은 없다.
+        candidate_n = max(count * 3, 12)
+        products = self._search_products(keyword, count=candidate_n)
         if not products:
             return []
 
@@ -639,7 +661,15 @@ class AliexpressSource:
                     break
             time.sleep(self.link_interval)
 
-        log(f"알리 제휴링크 생성: {len(result)}/{count}", "ok")
+        # 실패 사유를 남겨 '세션 문제'와 '상품이 제휴 미대상'을 구분한다.
+        # (구분이 없어 2026-08 6일간 세션 만료로만 오인됐다)
+        skips = ", ".join(f"{k} {v}" for k, v in sorted(self.link_skip_stats.items()))
+        detail = f" | 후보 {len(products)}개 중 제외: {skips}" if skips else ""
+        level = "ok" if result else "warn"
+        log(f"알리 제휴링크 생성: {len(result)}/{count}{detail}", level)
+        if not result and self.link_skip_stats.get("not_affiliate"):
+            log(f"'{keyword}' 검색 결과가 전부 제휴 미대상(알리 코리아 로컬 셀러 등) "
+                f"— 키워드를 바꾸면 해결됩니다", "warn")
         return result
 
     def close(self):
