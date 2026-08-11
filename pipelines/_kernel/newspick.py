@@ -292,12 +292,14 @@ def run(cfg: NewspickConfig, category: str = "추천", count: int = 1,
             if product:
                 content += render_product_card(product)
 
-            # 대가성 문구는 본문 최상단 — 뉴스픽 제휴 링크는 항상 있고,
-            # 쿠팡 상품 카드가 붙었으면 두 제휴처를 함께 고지한다.
-            notice_sources = [affiliate_notice.NEWSPICK]
+            # 대가성 문구는 본문 최상단 — 쿠팡 상품 카드가 붙은 글만 대상.
+            # 뉴스픽 추천인 링크는 상품 추천이 아니라 기사 공유이고 수익도 판매
+            # 전환이 아닌 도착 페이지 광고 노출에서 나와, 표시·광고 심사지침의
+            # '추천·보증'으로 보기 어렵다 → 고지 대상에서 제외
+            # (newspick_to_threads.py 와 동일 기준).
             if product:
-                notice_sources.append(affiliate_notice.COUPANG)
-            content = affiliate_notice.prepend_html(content, *notice_sources)
+                content = affiliate_notice.prepend_html(
+                    content, affiliate_notice.COUPANG)
 
             # 정적 2 + AI 관련 3 + 네이버 연관검색어(트렌드) 최대 3 = 검색 태그 강화
             from common.ai_intro import generate_related_tags

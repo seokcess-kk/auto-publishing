@@ -690,10 +690,9 @@ def build_newspick_naver_document(title: str, article: dict,
         "@ctype": "documentTitle",
     })
 
-    # 1.5) 대가성 문구 — 본문 최상단 (제휴 심사 요건)
-    from common import affiliate_notice as _an
-    components.append(_notice_component(_an.NEWSPICK))
-    components.append(_empty_line())
+    # 뉴스픽 단독 글은 대가성 문구를 넣지 않는다 — 기사 공유는 상품 추천이
+    # 아니라서 표시·광고 심사지침의 '추천·보증'에 해당하지 않는다는 판단.
+    # 쿠팡 상품 카드가 붙는 경로(_kernel/newspick.py)는 쿠팡 고지를 넣는다.
 
     # 2) 카테고리 라벨
     if category:
