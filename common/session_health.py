@@ -59,11 +59,53 @@ PROFILES = [
     {
         "profile": "aliexpress_login_profile",
         "label":   "AliExpress",
-        "checks":  [
-            ("%aliexpress.com%", ("_hvn", "ali_apache_id", "_m_h5_tk", "xman_t")),
-        ],
+        # 쿠키 만료일로는 판정하지 않는다 — 아래 live 참고.
+        "checks":  [],
+        "live":    "aliexpress",
     },
 ]
+
+
+# ─── 쿠키 만료일로 판정할 수 없는 프로필 ──────────────────────────────────
+#
+# 알리는 *비로그인* 방문에도 xman_t / ali_apache_id 를 2027년까지 발급한다.
+# 그래서 제휴(Partners) 세션이 죽어도 쿠키 기준으로는 "D-700 정상"으로 보고돼,
+# 2026-08-05 ~ 08-11 6일 동안 18회 발행이 연속 실패하는 내내 일일 요약이
+# 아무 경고도 띄우지 않았다. 실제 발행 결과(run ledger)를 신호로 쓴다.
+_ALI_EXPIRED_MARKERS = ("알리 제휴 세션 만료", "제휴 세션 만료/미가입")
+
+
+def _aliexpress_status() -> tuple[str, str]:
+    """최근 알리 실행 기록으로 제휴 세션 상태 판정 → (status, detail)."""
+    import json
+
+    path = _BASE_DIR / "data" / "pipeline_runs.json"
+    if not path.exists():
+        return "no_cookies", "실행 기록 없음 — 판정 불가"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return "no_cookies", f"실행 기록 읽기 실패 ({e})"
+
+    runs = data if isinstance(data, list) else data.get("runs", [])
+    ali = [r for r in runs if "aliexpress" in str(r.get("module", "")).lower()]
+    if not ali:
+        return "no_cookies", "알리 실행 기록 없음 — 판정 불가"
+
+    recent = ali[-5:]
+    expired = [r for r in recent
+               if any(m in str(r.get("stderr_tail", "")) for m in _ALI_EXPIRED_MARKERS)]
+    if expired:
+        last = expired[-1].get("started_at", "")[:16].replace("T", " ")
+        return ("warn",
+                f"제휴 세션 만료 — 최근 {len(recent)}회 중 {len(expired)}회 실패 "
+                f"(마지막 {last}). python tools/aliexpress_manual_login.py "
+                f"→ 'Continue with Google'")
+
+    failed = [r for r in recent if r.get("status") == "failure"]
+    if len(failed) == len(recent):
+        return "warn", f"최근 {len(recent)}회 연속 실패 (세션 외 원인) — stderr 확인 필요"
+    return "ok", f"최근 {len(recent)}회 중 성공 {len(recent) - len(failed)}회"
 
 
 def _cookie_expires_to_dt(chrome_us: int) -> datetime | None:
@@ -137,6 +179,12 @@ def check_profiles(warn_days: int = 7) -> list[dict]:
             "days_left": None,
             "detail":    "",
         }
+
+        # 쿠키 만료일이 무의미한 프로필은 전용 판정기로 대체
+        if cfg.get("live") == "aliexpress":
+            out["status"], out["detail"] = _aliexpress_status()
+            rows.append(out)
+            continue
 
         if not cookies_db.exists():
             out["detail"] = "프로필 미존재 — 수동 로그인 필요"

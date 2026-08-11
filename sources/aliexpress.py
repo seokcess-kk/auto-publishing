@@ -556,7 +556,16 @@ class AliexpressSource:
             # 세션 만료 시 JSON 대신 HTML 로그인 페이지가 반환됨
             body = res.text()
             if not body.strip().startswith("{"):
-                if "login" in body.lower() or "sign" in body.lower():
+                # 'sign' 부분일치는 design/signal/signature 에도 걸려 정상
+                # 응답을 세션 만료로 오진할 수 있다 → 로그인 페이지 고유
+                # 마커로만 판정한다. 실제 만료 시 응답은
+                # <meta name="snap-shot-key" content="_pc_snapshot-login-ui">
+                # 를 포함한 login.aliexpress.com HTML 이다.
+                low = body.lower()
+                if any(m in low for m in (
+                        "_pc_snapshot-login-ui", "login.aliexpress.com",
+                        "passport.aliexpress.com", "sign in", "signin",
+                        "login-form", "loginform")):
                     # storage 를 지우지 않는다 — 유효할 수도 있는 세션을 보존하고
                     # (검색은 비로그인으로도 됨) 수동 Google 재로그인만 안내한다.
                     self.session_expired = True  # 호출자가 키워드 부적합과 구분
