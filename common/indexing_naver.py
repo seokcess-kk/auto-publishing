@@ -80,7 +80,28 @@ def _do_login(page) -> bool:
         time.sleep(0.5)
         page.fill("#pw", password)
         time.sleep(0.5)
-        page.click(".btn_login")
+
+        # 로그인 버튼 — 네이버가 마크업을 바꿨다(2026-08 확인: `.btn_login` 이
+        # 사라지고 `#loginBtn_column` / `#loginBtn_row` 반응형 2벌 +
+        # class="btn_done"). 레이아웃에 따라 한쪽만 보이므로 순서대로 시도하고,
+        # 전부 못 찾으면 비밀번호 필드에서 Enter 로 폼을 제출한다.
+        # (셀렉터 하나만 박아두면 다음 개편 때 또 같은 방식으로 조용히 죽는다)
+        clicked = ""
+        for sel in ("#loginBtn_column", "#loginBtn_row",
+                    "button.btn_done:has-text('로그인')", ".btn_login"):
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    el.click()
+                    clicked = sel
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            log("[Naver 색인] 로그인 버튼 미발견 — Enter 로 폼 제출 시도", "warn")
+            page.press("#pw", "Enter")
+        else:
+            log(f"[Naver 색인] 로그인 버튼 클릭: {clicked}", "info")
         time.sleep(3)
 
         current = page.url
