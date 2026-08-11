@@ -79,14 +79,30 @@ def main(timeout_sec: int = 600) -> int:
         def logged_in() -> bool:
             """콘솔 접근이 로그인 페이지로 튕기지 않으면 로그인 상태.
 
-            페이지를 이동시키면 사용자가 입력 중인 로그인 폼이 날아가므로
-            APIRequestContext(컨텍스트 쿠키 공유)로 확인한다.
+            APIRequestContext 로는 판정할 수 없다 — 서치어드바이저는
+            nid.naver.com/oauth2.0/authorize 를 거치는 OAuth 를 쓰는데, 이
+            핸드셰이크는 브라우저 내비게이션이 있어야 끝난다. request 로는
+            로그인이 끝난 뒤에도 authorize 페이지에서 멈춰 항상 False 가
+            나온다(2026-08-11 실측: status 200 이지만 url 은 authorize).
+
+            대신 **별도 탭**에서 이동해 확인한다. 사용자가 로그인 폼을 채우고
+            있는 탭은 건드리지 않는다.
             """
+            probe = None
             try:
-                res = context.request.get(_CONSOLE, timeout=15000)
-                return "nid.naver.com" not in res.url and "login" not in res.url.lower()
+                probe = context.new_page()
+                probe.goto(_CONSOLE, wait_until="domcontentloaded", timeout=30000)
+                probe.wait_for_timeout(1500)
+                url = probe.url
+                return "nid.naver.com" not in url and "/login" not in url.lower()
             except Exception:
                 return False
+            finally:
+                if probe is not None:
+                    try:
+                        probe.close()
+                    except Exception:
+                        pass
 
         print(">>> 브라우저에서 네이버 로그인을 완료하세요 <<<")
         print("    (ID/PW + 캡차 / 2단계 인증 모두 OK)")
