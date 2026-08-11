@@ -106,7 +106,25 @@ def _do_login(page) -> bool:
 
         current = page.url
         if "nid.naver.com" in current and "login" in current:
-            log("[Naver 색인] 로그인 실패 (캡차 또는 2단계 인증 필요)", "error")
+            # 로그인 페이지에 머무르는 원인은 자격증명 오류 / 캡차 / 2단계 인증
+            # 셋 다 가능하다. 예전 메시지는 무조건 "캡차 또는 2단계 인증"이라고
+            # 단정해, 실제로는 .env 계정이 틀렸던 건을 캡차로 오진하게 만들었다
+            # (2026-08-11). 페이지에 뜬 안내문에서 실제 사유를 뽑아 남긴다.
+            hint = ""
+            try:
+                body = page.inner_text("body")[:800]
+                for kw in ("아이디 또는 비밀번호", "자동입력 방지", "캡차",
+                           "2단계 인증", "새로운 기기", "보호조치", "일시적으로 제한"):
+                    if kw in body:
+                        hint = kw
+                        break
+            except Exception:
+                pass
+            reason = f"페이지 안내: '{hint}'" if hint else "사유 문구 확인 불가"
+            log(f"[Naver 색인] 로그인 실패 — 로그인 페이지에 머무름. {reason} "
+                f"(자격증명 오류/캡차/2단계 인증 중 하나). "
+                f"NAVER_SEARCHADVISOR_USERNAME 확인 후 "
+                f"python tools/naver_searchadvisor_login.py 로 수동 로그인", "error")
             return False
 
         log("[Naver 색인] 로그인 성공", "ok")
