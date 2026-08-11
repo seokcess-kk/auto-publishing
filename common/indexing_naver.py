@@ -131,17 +131,30 @@ def submit_urls(urls: list) -> dict:
 
         page = context.new_page()
 
-        # 최초 로그인 또는 세션 만료 확인
-        page.goto("https://searchadvisor.naver.com/", wait_until="domcontentloaded", timeout=30000)
+        # 로그인 상태 확인 — 랜딩 페이지("/")는 **비로그인이어도 리다이렉트하지
+        # 않는다**. 로그인 링크가 있는 소개 페이지가 그대로 렌더된다. 이 때문에
+        # 아래 분기가 한 번도 참이 되지 않아 _do_login 이 호출되지 않았고,
+        # 네이버 색인이 64건 연속 조용히 실패했다(2026-08-11 발견).
+        # 로그인이 필요한 콘솔 경로로 판정해야 한다.
+        _CONSOLE = "https://searchadvisor.naver.com/console/board"
+        page.goto(_CONSOLE, wait_until="domcontentloaded", timeout=30000)
         time.sleep(2)
 
         if "nid.naver.com" in page.url or "login" in page.url.lower():
-            log("[Naver 색인] 로그인 필요", "info")
+            log("[Naver 색인] 세션 만료 — 자동 로그인 시도", "info")
             if not _do_login(page):
+                log("[Naver 색인] 자동 로그인 실패 — 네이버 색인 전량 미제출. "
+                    "python tools/naver_searchadvisor_login.py 로 수동 로그인 필요",
+                    "error")
                 context.close()
                 return {url: "error" for url in urls}
-            page.goto("https://searchadvisor.naver.com/", wait_until="domcontentloaded", timeout=30000)
+            page.goto(_CONSOLE, wait_until="domcontentloaded", timeout=30000)
             time.sleep(2)
+            if "nid.naver.com" in page.url or "login" in page.url.lower():
+                log("[Naver 색인] 로그인 후에도 콘솔 접근 불가 — 수동 로그인 필요",
+                    "error")
+                context.close()
+                return {url: "error" for url in urls}
 
         # URL별 색인 제출
         for idx, url in enumerate(urls[:DAILY_LIMIT], start=1):
@@ -155,7 +168,16 @@ def submit_urls(urls: list) -> dict:
 
                 csrf, enc_id = _extract_csrf_and_encid(page)
                 if not csrf or not enc_id:
-                    log(f"[Naver 색인] {idx}. csrf/enc_id 없음 — 로그인 세션 만료 가능성: {url}", "warn")
+                    # 첫 URL 부터 실패하면 개별 URL 문제가 아니라 세션 문제다.
+                    # warn 으로만 남기면 스케줄러가 stderr 의 [ERROR] 를 못 봐
+                    # 전량 실패한 실행을 success 로 기록한다(소프트 실패 사각지대).
+                    if idx == 1:
+                        log("[Naver 색인] csrf/enc_id 추출 불가 — 로그인 세션 없음. "
+                            "네이버 색인 전량 미제출, 수동 로그인 필요", "error")
+                        for u in urls[:DAILY_LIMIT]:
+                            results.setdefault(u, "error")
+                        break
+                    log(f"[Naver 색인] {idx}. csrf/enc_id 없음: {url}", "warn")
                     results[url] = "error"
                     continue
 
