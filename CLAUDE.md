@@ -272,6 +272,13 @@ Three scheduled tasks:
   All `RunLevel=Highest`, so `taskkill` from a non-elevated PowerShell will
   hit `Access denied` and the singleton guard's failure-to-kill list is
   what notifies that case.
+  Registered with `pythonw.exe` (not `python.exe`) so the 5-minute cadence
+  doesn't flash a console window. pythonw leaves `sys.stdout`/`sys.stderr`
+  as `None`, so `common.logger`'s console output silently vanishes —
+  `tools/watchdog.py` therefore owns a `RotatingFileHandler` writing
+  `logs/watchdog.log`, and its `wlog()` (not `log()`) is what every code
+  path must use. The `Stop`/`Start-ScheduledTask` subprocess runs with
+  `CREATE_NO_WINDOW` for the same reason.
 - `AutoPublishing_Chrome` — runs `tools/chrome_background_launcher.ps1` at
   logon. The wrapper uses `WScript.Shell.Run` with `SW_SHOWMINNOACTIVE` (=7)
   so Chrome starts minimized without focus, and reads

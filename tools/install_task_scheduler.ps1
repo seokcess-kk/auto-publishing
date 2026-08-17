@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 # Windows 작업 스케줄러 등록 — Auto Publishing
 #
 # 등록하는 두 작업:
@@ -20,6 +20,19 @@ $ErrorActionPreference = "Stop"
 
 $projectDir = (Resolve-Path "$PSScriptRoot\..").Path
 
+# 두 작업 모두 RunLevel=Highest 로 등록/해제되므로 관리자 권한이 필수다.
+# 없으면 Unregister-ScheduledTask 가 도중에 'Access denied' 로 죽는데,
+# 실패 지점에 따라 Scheduler 작업만 지워진 채 멈출 수 있다. 먼저 막는다.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+           ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "관리자 권한이 필요합니다. 아무것도 변경하지 않고 종료합니다." -ForegroundColor Red
+    Write-Host "'PowerShell' 우클릭 → '관리자 권한으로 실행' 후 다시 실행하세요:`n"
+    Write-Host "  cd $projectDir" -ForegroundColor Yellow
+    Write-Host "  powershell -ExecutionPolicy Bypass -File tools\install_task_scheduler.ps1$(if ($Uninstall) { ' -Uninstall' })" -ForegroundColor Yellow
+    exit 1
+}
+
 # 작업 스케줄러는 사용자 셸의 PATH 를 그대로 못 받는다. python.exe 풀 경로를
 # 명시적으로 찾아 등록. Get-Command 가 첫 매칭(보통 사용자 셸의 python)을 반환.
 $pyCmd = Get-Command python -ErrorAction SilentlyContinue
@@ -35,6 +48,16 @@ if ($pyCmd.Source -match 'WindowsApps' -and (Get-Item $pyCmd.Source).Length -lt 
     }
 }
 $pythonExe = $pyCmd.Source
+
+# Watchdog 는 5분마다 실행되므로 python.exe 로 등록하면 콘솔 창이 매번 깜빡인다.
+# 같은 설치 경로의 pythonw.exe (콘솔 없는 런처) 로 띄우고, 실행 기록은
+# tools\watchdog.py 의 RotatingFileHandler 가 logs\watchdog.log 에 남긴다.
+# Scheduler 는 상시 동작하는 장기 프로세스라 python.exe 그대로 둔다.
+$pythonwExe = Join-Path (Split-Path $pythonExe -Parent) "pythonw.exe"
+if (-not (Test-Path $pythonwExe)) {
+    Write-Warning "pythonw.exe 를 찾지 못해 watchdog 도 python.exe 로 등록합니다 (5분마다 콘솔 창이 뜹니다)."
+    $pythonwExe = $pythonExe
+}
 
 $schedulerName = "AutoPublishing_Scheduler"
 $watchdogName  = "AutoPublishing_Watchdog"
@@ -54,7 +77,8 @@ if ($Uninstall) {
 # --- 사전 확인 -------------------------------------------------------
 Write-Host "=== Auto Publishing 작업 스케줄러 등록 ===" -ForegroundColor Cyan
 Write-Host "프로젝트:  $projectDir"
-Write-Host "Python:    $pythonExe`n"
+Write-Host "Python:    $pythonExe"
+Write-Host "Pythonw:   $pythonwExe  (watchdog 전용 — 콘솔 창 없음)`n"
 
 if (-not (Test-Path "$projectDir\pipelines\scheduler_runner.py")) {
     Write-Error "scheduler_runner.py 가 보이지 않습니다. 프로젝트 경로 확인 필요."
@@ -106,7 +130,7 @@ Write-Host "✓ 등록: $schedulerName  (부팅 +1분 후 시작)" -ForegroundCo
 
 # --- 2) Watchdog (매 5분) -------------------------------------------
 $wdAction  = New-ScheduledTaskAction `
-    -Execute $pythonExe `
+    -Execute $pythonwExe `
     -Argument "tools\watchdog.py" `
     -WorkingDirectory $projectDir
 
@@ -138,7 +162,7 @@ Register-ScheduledTask `
     -Principal $schedPrincipal `
     -Description "Auto Publishing watchdog — 5분 단위 헬스체크" | Out-Null
 
-Write-Host "✓ 등록: $watchdogName  (5분 간격)" -ForegroundColor Green
+Write-Host "✓ 등록: $watchdogName  (5분 간격, 콘솔 창 없음 → logs\watchdog.log)" -ForegroundColor Green
 
 # --- 즉시 시작 -------------------------------------------------------
 Write-Host "`n--- scheduler_runner 즉시 시작 ---" -ForegroundColor Cyan
