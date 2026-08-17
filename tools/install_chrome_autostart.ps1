@@ -1,4 +1,4 @@
-# Windows 작업 스케줄러에 'AutoPublishing_Chrome' 작업 등록.
+﻿# Windows 작업 스케줄러에 'AutoPublishing_Chrome' 작업 등록.
 #
 # 부팅 (또는 로그온) 시 본인 평소 Chrome 을 자동 시작 → tistory bridge extension
 # 이 항상 polling 가능한 상태가 됨.

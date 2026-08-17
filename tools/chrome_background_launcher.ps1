@@ -1,4 +1,4 @@
-# Chrome 을 minimized 로 시작 — 부팅 시 화면 거슬리지 않고 extension polling 유지.
+﻿# Chrome 을 minimized 로 시작 — 부팅 시 화면 거슬리지 않고 extension polling 유지.
 # 작업 스케줄러 (AutoPublishing_Chrome) 가 호출.
 #
 # 평소 사용 프로필 자동 감지:

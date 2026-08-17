@@ -1,4 +1,4 @@
-# Auto Publishing scheduler를 Windows 작업 스케줄러에 등록한다.
+﻿# Auto Publishing scheduler를 Windows 작업 스케줄러에 등록한다.
 #
 # 1회만 실행:
 #   powershell -ExecutionPolicy Bypass -File scripts\install_scheduler_task.ps1
